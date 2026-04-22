@@ -42,6 +42,15 @@ def test_title_generation_present_in_default_config():
     assert tg["extra_body"] == {}
 
 
+def test_document_tools_defaults_present_in_default_config():
+    doc_cfg = DEFAULT_CONFIG["document_tools"]
+    assert doc_cfg["base_url"] == "http://127.0.0.1:9478"
+    assert doc_cfg["stack_dir"] == "~/docker/doc-tools"
+    assert doc_cfg["intake_dir"] == ""
+    assert doc_cfg["timeout"] == 120
+    assert doc_cfg["cleanup_after_extract"] is True
+
+
 def test_session_search_defaults_include_extra_body_and_concurrency():
     ss = DEFAULT_CONFIG["auxiliary"]["session_search"]
     assert ss["provider"] == "auto"

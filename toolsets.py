@@ -31,6 +31,8 @@ from typing import List, Dict, Any, Set, Optional
 _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
+    # Local document extraction via doc-tools sidecar (when available)
+    "document_extract",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -71,6 +73,12 @@ TOOLSETS = {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
         "includes": []  # No other toolsets included
+    },
+
+    "document": {
+        "description": "Local document extraction via the localhost doc-tools sidecar, with URL fallback to web_extract",
+        "tools": ["document_extract"],
+        "includes": []
     },
     
     "search": {

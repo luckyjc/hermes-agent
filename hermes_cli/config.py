@@ -455,6 +455,21 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "document_tools": {
+        # Local doc-tools sidecar base URL. Hermes stages local files into the
+        # intake directory below, then POSTs to this endpoint.
+        "base_url": "http://127.0.0.1:9478",
+        # Sibling stack root. Used to derive intake_dir when that key is unset.
+        "stack_dir": "~/docker/doc-tools",
+        # Optional explicit intake directory override. Empty means
+        # <stack_dir>/intake.
+        "intake_dir": "",
+        # Request timeout for sidecar extraction calls (seconds).
+        "timeout": 120,
+        # Remove staged temp files after extraction succeeds or fails.
+        "cleanup_after_extract": True,
+    },
+
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once per
     # conversation turn (on first write_file/patch call).  Use /rollback to restore.

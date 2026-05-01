@@ -33,6 +33,9 @@ _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
     # Local document extraction via doc-tools sidecar (when available)
     "document_extract",
+    # Untrusted link sandbox (gated on local Docker stack availability)
+    "untrusted_link_triage", "audit_untrusted_url",
+    "audit_untrusted_repo", "inspect_untrusted_download",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -84,6 +87,17 @@ TOOLSETS = {
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],
+        "includes": []
+    },
+
+    "untrusted_link_sandbox": {
+        "description": "Containerized first-pass triage for untrusted URLs, repositories, and quarantined downloads",
+        "tools": [
+            "untrusted_link_triage",
+            "audit_untrusted_url",
+            "audit_untrusted_repo",
+            "inspect_untrusted_download",
+        ],
         "includes": []
     },
     

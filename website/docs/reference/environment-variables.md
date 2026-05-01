@@ -125,6 +125,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
+| `HERMES_UNTRUSTED_LINK_SANDBOX_DIR` | Override path for the local untrusted-link Docker sandbox. Defaults to `/home/lucky/docker/untrusted-link-sandbox`; the directory must contain `docker-compose.yml` and executable wrappers in `bin/`. |
 
 ### Nous Tool Gateway
 

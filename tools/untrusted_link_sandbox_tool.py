@@ -18,6 +18,13 @@ from tools.registry import registry
 
 DEFAULT_SANDBOX_DIR = Path("/home/lucky/docker/untrusted-link-sandbox")
 MAX_TIMEOUT_SECONDS = 600
+REQUIRED_WRAPPERS = (
+    "triage",
+    "audit-url",
+    "audit-url-cdp",
+    "audit-repo",
+    "inspect-download",
+)
 
 
 def _sandbox_dir() -> Path:
@@ -29,7 +36,7 @@ def _tool_available() -> bool:
     return (
         root.is_dir()
         and (root / "docker-compose.yml").is_file()
-        and os.access(root / "bin" / "triage", os.X_OK)
+        and all(os.access(root / "bin" / name, os.X_OK) for name in REQUIRED_WRAPPERS)
     )
 
 

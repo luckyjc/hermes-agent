@@ -63,7 +63,7 @@ Use the untrusted-link sandbox before opening unfamiliar user-provided links wit
 4. For browser-saved artifacts, keep them under the sandbox quarantine and call `inspect_untrusted_download` before opening elsewhere.
 5. Read the returned JSON summary and markdown report path. Treat ClamAV and heuristic findings as triage signals, not a clean-room guarantee.
 
-The default local stack path is `/home/lucky/docker/untrusted-link-sandbox`; override with `HERMES_UNTRUSTED_LINK_SANDBOX_DIR` when running a compatible stack elsewhere.
+The default local stack path is `/home/lucky/docker/untrusted-link-sandbox`; override with `HERMES_UNTRUSTED_LINK_SANDBOX_DIR` when running a compatible stack elsewhere. A compatible stack must include `docker-compose.yml` plus executable wrappers for `triage`, `audit-url`, `audit-url-cdp`, `audit-repo`, and `inspect-download` under `bin/`.
 
 ## Terminal Backends
 

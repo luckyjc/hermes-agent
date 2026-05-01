@@ -27,6 +27,12 @@ def test_tool_available_with_expected_stack(monkeypatch, tmp_path):
     assert tool._tool_available() is True
 
 
+def test_toolset_is_cli_configurable():
+    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+
+    assert "untrusted_link_sandbox" in {name for name, _, _ in CONFIGURABLE_TOOLSETS}
+
+
 def test_host_quarantine_path_is_converted(monkeypatch, tmp_path):
     root = make_sandbox(tmp_path)
     target = root / "quarantine" / "downloads" / "sample.txt"

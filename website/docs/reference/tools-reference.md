@@ -6,9 +6,9 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 # Built-in Tools Reference
 
-This page documents all 53 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
+This page documents all 57 built-in tools in the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, enabled toolsets, and local dependencies.
 
-**Quick counts:** 11 browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, and 15 standalone tools across other toolsets.
+**Quick counts:** 11 browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 4 untrusted-link sandbox tools, 5 Feishu tools, and 15 standalone tools across other toolsets.
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with a server-name prefix (e.g., `github_create_issue` for the `github` MCP server). See [MCP Integration](/docs/user-guide/features/mcp) for configuration.
@@ -47,6 +47,17 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `cronjob` | Unified scheduled-task manager. Use `action="create"`, `"list"`, `"update"`, `"pause"`, `"resume"`, `"run"`, or `"remove"` to manage jobs. Supports skill-backed jobs with one or more attached skills, and `skills=[]` on update clears attached skills. Cron runs happen in fresh sessions with no current-chat context. | — |
+
+## `untrusted_link_sandbox` toolset
+
+These tools are thin Hermes adapters around a local Docker sandbox stack. They are registered only when `/home/lucky/docker/untrusted-link-sandbox` (or `HERMES_UNTRUSTED_LINK_SANDBOX_DIR`) has the expected `docker-compose.yml` and executable `bin/triage` wrapper.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `untrusted_link_triage` | Safely triage an untrusted URL, GitHub/GitLab repository, or quarantined download. Returns bounded JSON with a markdown report path, host path mapping, parsed JSON summary, stdout/stderr tails, and report excerpt. | Local untrusted-link Docker sandbox |
+| `audit_untrusted_url` | Audit an untrusted HTTP(S) URL in the browser sandbox. Set `deep=true` for container-local CDP telemetry. | Local untrusted-link Docker sandbox |
+| `audit_untrusted_repo` | Statically audit an untrusted public GitHub/GitLab repository in the auditor sandbox. | Local untrusted-link Docker sandbox |
+| `inspect_untrusted_download` | Inspect a file already saved under the sandbox quarantine, using either a `/quarantine/...` path or matching host quarantine path. | Local untrusted-link Docker sandbox |
 
 ## `delegation` toolset
 

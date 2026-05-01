@@ -264,6 +264,9 @@ TOOLSETS = {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
         "tools": [
             "web_search", "web_extract",
+            # Untrusted link sandbox (gated on local Docker stack availability)
+            "untrusted_link_triage", "audit_untrusted_url",
+            "audit_untrusted_repo", "inspect_untrusted_download",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
@@ -284,6 +287,9 @@ TOOLSETS = {
         "tools": [
             # Web
             "web_search", "web_extract",
+            # Untrusted link sandbox (gated on local Docker stack availability)
+            "untrusted_link_triage", "audit_untrusted_url",
+            "audit_untrusted_repo", "inspect_untrusted_download",
             # Terminal + process management
             "terminal", "process",
             # File manipulation

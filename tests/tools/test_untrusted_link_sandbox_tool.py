@@ -14,9 +14,10 @@ def make_sandbox(tmp_path: Path) -> Path:
     (root / "reports").mkdir()
     (root / "quarantine" / "downloads").mkdir(parents=True)
     (root / "docker-compose.yml").write_text("services: {}\n")
-    triage = root / "bin" / "triage"
-    triage.write_text("#!/usr/bin/env bash\n")
-    triage.chmod(0o755)
+    for wrapper in tool.REQUIRED_WRAPPERS:
+        path = root / "bin" / wrapper
+        path.write_text("#!/usr/bin/env bash\n")
+        path.chmod(0o755)
     return root
 
 
@@ -25,6 +26,14 @@ def test_tool_available_with_expected_stack(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_UNTRUSTED_LINK_SANDBOX_DIR", str(root))
 
     assert tool._tool_available() is True
+
+
+def test_tool_unavailable_when_any_required_wrapper_is_missing(monkeypatch, tmp_path):
+    root = make_sandbox(tmp_path)
+    (root / "bin" / "audit-url").unlink()
+    monkeypatch.setenv("HERMES_UNTRUSTED_LINK_SANDBOX_DIR", str(root))
+
+    assert tool._tool_available() is False
 
 
 def test_toolset_is_cli_configurable():

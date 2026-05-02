@@ -50,7 +50,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 
 ## `untrusted_link_sandbox` toolset
 
-These tools are thin Hermes adapters around a local Docker sandbox stack. They are registered only when `/home/lucky/docker/untrusted-link-sandbox` (or `HERMES_UNTRUSTED_LINK_SANDBOX_DIR`) has the expected `docker-compose.yml` and executable `bin/triage` wrapper.
+These tools are thin Hermes adapters around a local Docker sandbox stack. They are registered only when `/home/lucky/docker/untrusted-link-sandbox` (or `HERMES_UNTRUSTED_LINK_SANDBOX_DIR`) has `docker-compose.yml` and the expected executable wrappers under `bin/`: `triage`, `audit-url`, `audit-url-cdp`, `audit-repo`, and `inspect-download`. The Docker stack is versioned separately in Azure Repos as `untrusted-link-sandbox`.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|

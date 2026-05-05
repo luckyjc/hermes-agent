@@ -2970,7 +2970,6 @@ def get_mcp_status() -> List[dict]:
         # banner or other status surfaces.
         if not _parse_boolish(cfg.get("enabled", True), default=True):
             continue
-
         transport = "http" if "url" in cfg else "stdio"
         server = active_servers.get(name)
         if server and server.session is not None:

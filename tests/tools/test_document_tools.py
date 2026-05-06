@@ -152,3 +152,54 @@ def test_document_tools_requirements_check_uses_health_endpoint(monkeypatch, tmp
     monkeypatch.setattr("tools.document_tools._health_cache", {})
 
     assert check_document_tools_requirements() is True
+
+
+def test_document_extract_paddleocr_vl_backend_posts_layout_parsing(monkeypatch, tmp_path):
+    source_path = tmp_path / "scan.pdf"
+    source_path.write_bytes(b"%PDF-1.4\n% tiny fake pdf for request-shape test\n")
+    intake_dir = tmp_path / "doc-tools" / "intake"
+    config = {
+        "document_tools": {
+            "base_url": "http://127.0.0.1:9478",
+            "intake_dir": str(intake_dir),
+            "timeout": 12,
+            "cleanup_after_extract": True,
+            "paddleocr_vl": {
+                "base_url": "http://paddle.example:8080",
+                "token": "secret-token",
+                "timeout": 34,
+            },
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+
+    observed = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        observed["url"] = url
+        observed["payload"] = json
+        observed["headers"] = headers
+        observed["timeout"] = timeout
+        return _Response(
+            {
+                "result": {
+                    "layoutParsingResults": [
+                        {"markdown": {"text": "invoice total\n\n$123.45"}}
+                    ]
+                }
+            }
+        )
+
+    monkeypatch.setattr("tools.document_tools.httpx.post", fake_post)
+
+    result = json.loads(document_extract_tool(str(source_path), backend="paddleocr_vl"))
+
+    assert result["ok"] is True
+    assert result["backend_used"] == "paddleocr_vl"
+    assert result["markdown"] == "invoice total\n\n$123.45"
+    assert result["structured_data"]["result"]["layoutParsingResults"]
+    assert observed["url"] == "http://paddle.example:8080/layout-parsing"
+    assert observed["payload"]["fileType"] == 0
+    assert observed["payload"]["file"]
+    assert observed["headers"]["Authorization"] == "token secret-token"
+    assert observed["timeout"] == 34

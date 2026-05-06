@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
 import os
 import shutil
 import time
@@ -22,6 +24,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BASE_URL = "http://127.0.0.1:9478"
 _DEFAULT_STACK_DIR = Path.home() / "docker" / "doc-tools"
 _DEFAULT_TIMEOUT = 120.0
+_DEFAULT_PADDLEOCR_VL_BASE_URL = "http://127.0.0.1:8098"
 _HEALTH_CACHE_TTL_SECONDS = 5.0
 _health_cache: dict[str, tuple[float, bool]] = {}
 
@@ -66,6 +69,21 @@ def _load_document_tools_config() -> dict[str, Any]:
         cfg.get("timeout") or os.getenv("HERMES_DOC_TOOLS_TIMEOUT"),
         _DEFAULT_TIMEOUT,
     )
+    paddle_cfg = cfg.get("paddleocr_vl", {})
+    if not isinstance(paddle_cfg, dict):
+        paddle_cfg = {}
+    paddle_base_url = str(
+        paddle_cfg.get("base_url")
+        or os.getenv("PADDLEOCR_VL_BASE_URL")
+        or _DEFAULT_PADDLEOCR_VL_BASE_URL
+    ).strip().rstrip("/")
+    paddle_token = str(
+        paddle_cfg.get("token") or os.getenv("PADDLEOCR_VL_TOKEN") or ""
+    ).strip()
+    paddle_timeout = _coerce_positive_float(
+        paddle_cfg.get("timeout") or os.getenv("PADDLEOCR_VL_TIMEOUT"),
+        timeout,
+    )
     cleanup_after_extract = bool(cfg.get("cleanup_after_extract", True))
 
     stack_dir = _expand_path(stack_dir_raw)
@@ -77,6 +95,11 @@ def _load_document_tools_config() -> dict[str, Any]:
         "intake_dir": intake_dir,
         "timeout": timeout,
         "cleanup_after_extract": cleanup_after_extract,
+        "paddleocr_vl": {
+            "base_url": paddle_base_url,
+            "token": paddle_token,
+            "timeout": paddle_timeout,
+        },
     }
 
 
@@ -180,6 +203,103 @@ def _delegate_url_extract(source: str, max_chars: int | None = None) -> str:
     )
 
 
+def _guess_paddle_file_type(source_path: Path) -> int:
+    suffix = source_path.suffix.lower()
+    if suffix == ".pdf":
+        return 0
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
+        return 1
+    mime_type, _ = mimetypes.guess_type(str(source_path))
+    if mime_type == "application/pdf":
+        return 0
+    if mime_type and mime_type.startswith("image/"):
+        return 1
+    raise ValueError("PaddleOCR-VL backend only supports PDF and image inputs")
+
+
+def _extract_paddleocr_markdown(payload: dict[str, Any]) -> str:
+    result = payload.get("result") if isinstance(payload, dict) else None
+    layout_results = None
+    if isinstance(result, dict):
+        layout_results = result.get("layoutParsingResults")
+    if layout_results is None:
+        layout_results = payload.get("layoutParsingResults") if isinstance(payload, dict) else None
+    if not isinstance(layout_results, list):
+        return ""
+
+    chunks: list[str] = []
+    for item in layout_results:
+        if not isinstance(item, dict):
+            continue
+        markdown = item.get("markdown")
+        if isinstance(markdown, dict):
+            text = markdown.get("text")
+        else:
+            text = markdown
+        if isinstance(text, str) and text.strip():
+            chunks.append(text.strip())
+    return "\n\n".join(chunks)
+
+
+def _extract_with_paddleocr_vl(
+    source_path: Path,
+    cfg: dict[str, Any],
+    max_chars: int | None = 200_000,
+) -> str:
+    paddle_cfg = cfg["paddleocr_vl"]
+    base_url = paddle_cfg["base_url"]
+    token = paddle_cfg["token"]
+    file_type = _guess_paddle_file_type(source_path)
+    encoded = base64.b64encode(source_path.read_bytes()).decode("ascii")
+    payload = {
+        "file": encoded,
+        "fileType": file_type,
+        "useDocOrientationClassify": True,
+        "useDocUnwarping": True,
+        "useChartRecognition": True,
+    }
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"token {token}"
+
+    response = httpx.post(
+        f"{base_url}/layout-parsing",
+        json=payload,
+        headers=headers,
+        timeout=paddle_cfg["timeout"],
+    )
+    response.raise_for_status()
+    raw_result = response.json()
+    if not isinstance(raw_result, dict):
+        return tool_error("PaddleOCR-VL returned a non-object JSON response")
+
+    markdown = _extract_paddleocr_markdown(raw_result)
+    truncated = False
+    if isinstance(max_chars, int) and max_chars > 0 and len(markdown) > max_chars:
+        markdown = markdown[:max_chars]
+        truncated = True
+
+    return tool_result(
+        {
+            "ok": True,
+            "backend_used": "paddleocr_vl",
+            "source": str(source_path),
+            "source_kind": "local_path",
+            "mime_type": mimetypes.guess_type(str(source_path))[0],
+            "markdown": markdown,
+            "structured_data": raw_result,
+            "metadata": {
+                "base_url": base_url,
+                "file_type": file_type,
+                "truncated": truncated,
+            },
+            "warnings": [],
+            "fallback_chain": ["paddleocr_vl"],
+            "error": None,
+        }
+    )
+
+
 def document_extract_tool(
     source: str,
     source_kind: str = "auto",
@@ -198,6 +318,9 @@ def document_extract_tool(
     normalized_source_kind = (source_kind or "auto").strip().lower()
     if normalized_source_kind not in {"auto", "local_path", "url"}:
         return tool_error(f"Unsupported source_kind: {source_kind}")
+    normalized_backend = (backend or "auto").strip().lower()
+    if normalized_backend not in {"auto", "markitdown", "docling", "paddleocr_vl"}:
+        return tool_error(f"Unsupported backend: {backend}")
 
     if normalized_source_kind == "url" or (
         normalized_source_kind == "auto" and _is_probable_url(normalized_source)
@@ -210,6 +333,19 @@ def document_extract_tool(
         return tool_error(f"Source file not found: {source_path}")
     if not source_path.is_file():
         return tool_error(f"Source is not a file: {source_path}")
+
+    if normalized_backend == "paddleocr_vl":
+        try:
+            return _extract_with_paddleocr_vl(source_path, cfg, max_chars=max_chars)
+        except httpx.HTTPStatusError as exc:
+            message = exc.response.text.strip() or str(exc)
+            return tool_error(
+                f"PaddleOCR-VL request failed: {message}",
+                status_code=exc.response.status_code,
+            )
+        except Exception as exc:
+            logger.exception("PaddleOCR-VL extraction failed for %s", normalized_source)
+            return tool_error(str(exc))
 
     staged_path: Path | None = None
     copied_to_intake = False
@@ -286,8 +422,8 @@ DOCUMENT_EXTRACT_SCHEMA = {
             },
             "backend": {
                 "type": "string",
-                "enum": ["auto", "markitdown", "docling"],
-                "description": "Preferred extraction backend for local files",
+                "enum": ["auto", "markitdown", "docling", "paddleocr_vl"],
+                "description": "Preferred extraction backend for local files. paddleocr_vl calls a configured /layout-parsing service for PDF/image OCR.",
                 "default": "auto",
             },
             "mode": {

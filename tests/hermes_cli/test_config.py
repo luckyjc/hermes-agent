@@ -80,6 +80,9 @@ class TestLoadConfigDefaults:
             assert doc_cfg["intake_dir"] == ""
             assert doc_cfg["timeout"] == 120
             assert doc_cfg["cleanup_after_extract"] is True
+            assert doc_cfg["paddleocr_vl"]["base_url"] == "http://127.0.0.1:8098"
+            assert doc_cfg["paddleocr_vl"]["token"] == ""
+            assert doc_cfg["paddleocr_vl"]["timeout"] == 600
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

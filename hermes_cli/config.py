@@ -579,6 +579,14 @@ DEFAULT_CONFIG = {
         "timeout": 120,
         # Remove staged temp files after extraction succeeds or fails.
         "cleanup_after_extract": True,
+        # Optional PaddleOCR-VL service for high-quality PDF/image OCR.
+        # Backend uses POST {base_url}/layout-parsing and optional
+        # Authorization: token <token>; token may also come from env.
+        "paddleocr_vl": {
+            "base_url": "http://127.0.0.1:8098",
+            "token": "",
+            "timeout": 600,
+        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.

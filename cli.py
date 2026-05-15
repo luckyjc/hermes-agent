@@ -8063,12 +8063,18 @@ class HermesCLI:
         prompt caching intact.
         """
         try:
-            from agent.skill_commands import reload_skills
+            from agent.skill_commands import get_skill_commands, reload_skills
 
             if not self._command_running:
                 print("🔄 Reloading skills...")
 
             result = reload_skills()
+            # refresh this module's cached command map too. reload_skills()
+            # rebinds agent.skill_commands._skill_commands, so the cli.py
+            # module-level _skill_commands reference can otherwise stay stale
+            # for the lifetime of the current interactive session.
+            global _skill_commands
+            _skill_commands = get_skill_commands()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)

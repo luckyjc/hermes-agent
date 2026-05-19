@@ -79,6 +79,7 @@ Or in-session:
 | `terminal` | `process`, `terminal` | Shell command execution and background process management. |
 | `todo` | `todo` | Task list management within a session. |
 | `tts` | `text_to_speech` | Text-to-speech audio generation. |
+| `untrusted_link_sandbox` | `untrusted_link_triage`, `audit_untrusted_url`, `audit_untrusted_repo`, `inspect_untrusted_download` | Containerized first-pass triage for untrusted URLs, public repositories, and quarantined downloads. Registered only when the local sandbox wrappers are installed. |
 | `vision` | `vision_analyze` | Image analysis via vision-capable models. |
 | `video` | `video_analyze` | Video analysis and understanding tools (opt-in, not in the default toolset — add explicitly via `--toolsets`). |
 | `web` | `web_extract`, `web_search` | Web search and page content extraction. |
@@ -91,9 +92,9 @@ Platform toolsets define the complete tool configuration for a deployment target
 
 | Toolset | Differences from `hermes-cli` |
 |---------|-------------------------------|
-| `hermes-cli` | Full toolset — the default for interactive CLI sessions. Includes file, terminal, web, browser, memory, skills, vision, image_gen, todo, tts, delegation, code_execution, cronjob, session_search, clarify, and `safe` (read-only) bundles plus the standard messaging tools. |
-| `hermes-acp` | Drops `clarify`, `cronjob`, `image_generate`, `send_message`, `text_to_speech`, and all four Home Assistant tools. Focused on coding tasks in IDE context. |
-| `hermes-api-server` | Drops `clarify`, `send_message`, and `text_to_speech`. Keeps everything else — suitable for programmatic access where user interaction isn't possible. |
+| `hermes-cli` | Full/default interactive toolset, including file, terminal, web, browser/CDP helpers, memory, skills, vision, image/media generation, todo, tts, delegation, code execution, cron, session search, clarify, safe read-only bundles, standard messaging tools, platform-adjacent integrations where enabled, and local-gated tools such as the untrusted-link sandbox when wrappers are present. |
+| `hermes-acp` | Drops `clarify`, `cronjob`, `image_generate`, `send_message`, `text_to_speech`, and Home Assistant tools. Keeps the untrusted-link sandbox so editor/IDE agents can inspect unfamiliar links before opening or cloning them. Focused on coding tasks in IDE context. |
+| `hermes-api-server` | Drops `clarify`, `send_message`, and `text_to_speech`. Keeps the untrusted-link sandbox — suitable for programmatic access where user interaction isn't possible. |
 | `hermes-cron` | Same as `hermes-cli`. |
 | `hermes-telegram` | Same as `hermes-cli`. |
 | `hermes-discord` | Adds `discord` and `discord_admin` on top of `hermes-cli`. |

@@ -130,6 +130,17 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
+
+def _is_silent_response(content: str) -> bool:
+    """Return True only when a cron response deliberately starts with [SILENT].
+
+    Cron reports may mention the literal marker while discussing another job
+    (for example, "the monitor returned [SILENT]").  Those should still be
+    delivered.  Suppression is reserved for responses whose first token is the
+    marker, case-insensitively, with an optional explanatory note after it.
+    """
+    return (content or "").strip().upper().startswith(SILENT_MARKER)
+
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
 
@@ -1872,7 +1883,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
                 should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                if should_deliver and success and _is_silent_response(deliver_content):
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 

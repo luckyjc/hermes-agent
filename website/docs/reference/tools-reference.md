@@ -6,9 +6,9 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 # Built-in Tools Reference
 
-This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
+This page documents the Hermes tool registry, grouped by toolset. Availability varies by platform, credentials, enabled toolsets, local dependencies, and runtime-discovered integrations.
 
-**Quick counts (current registry):** ~70 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 7 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
+**Quick categories:** browser automation including CDP/dialog support, file tools, RL tools, Home Assistant tools, terminal/process tools, web tools, X search, document extraction, untrusted-link sandbox tools, Feishu tools, Spotify tools, Yuanbao tools, Discord tools, media generation/analysis tools, and standalone tools across other toolsets.
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp_<server>_` (e.g., `mcp_github_create_issue` for the `github` MCP server). See [MCP Integration](/docs/user-guide/features/mcp) for configuration.
@@ -55,6 +55,17 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `cronjob` | Unified scheduled-task manager. Use `action="create"`, `"list"`, `"update"`, `"pause"`, `"resume"`, `"run"`, or `"remove"` to manage jobs. Supports skill-backed jobs with one or more attached skills, and `skills=[]` on update clears attached skills. Cron runs happen in fresh sessions with no current-chat context. | — |
+
+## `untrusted_link_sandbox` toolset
+
+These tools are thin Hermes adapters around a local Docker sandbox stack. They are registered only when `/home/lucky/docker/untrusted-link-sandbox` (or `HERMES_UNTRUSTED_LINK_SANDBOX_DIR`) has `docker-compose.yml` and the expected executable wrappers under `bin/`: `triage`, `audit-url`, `audit-url-cdp`, `audit-repo`, and `inspect-download`. The Docker stack is versioned separately in Azure Repos as `untrusted-link-sandbox`.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `untrusted_link_triage` | Safely triage an untrusted URL, GitHub/GitLab repository, or quarantined download. Returns bounded JSON with a markdown report path, host path mapping, parsed JSON summary, stdout/stderr tails, and report excerpt. | Local untrusted-link Docker sandbox |
+| `audit_untrusted_url` | Audit an untrusted HTTP(S) URL in the browser sandbox. Set `deep=true` for container-local CDP telemetry. | Local untrusted-link Docker sandbox |
+| `audit_untrusted_repo` | Statically audit an untrusted public GitHub/GitLab repository in the auditor sandbox. | Local untrusted-link Docker sandbox |
+| `inspect_untrusted_download` | Inspect a file already saved under the sandbox quarantine, using either a `/quarantine/...` path or matching host quarantine path. | Local untrusted-link Docker sandbox |
 
 ## `delegation` toolset
 

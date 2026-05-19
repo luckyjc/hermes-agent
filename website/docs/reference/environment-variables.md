@@ -161,6 +161,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `VERCEL_PROJECT_ID` | Vercel project ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_TEAM_ID` | Vercel team ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_OIDC_TOKEN` | Vercel short-lived OIDC token (development-only alternative) |
+| `HERMES_UNTRUSTED_LINK_SANDBOX_DIR` | Override path for the local untrusted-link Docker sandbox. Defaults to `/home/lucky/docker/untrusted-link-sandbox`; the directory must contain `docker-compose.yml` and executable wrappers in `bin/`. |
 
 ### Langfuse Observability
 

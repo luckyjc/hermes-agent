@@ -31,6 +31,11 @@ from typing import List, Dict, Any, Set, Optional
 _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
+    # Local document extraction via doc-tools sidecar (when available)
+    "document_extract",
+    # Untrusted link sandbox (gated on local Docker stack availability)
+    "untrusted_link_triage", "audit_untrusted_url",
+    "audit_untrusted_repo", "inspect_untrusted_download",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -82,6 +87,12 @@ TOOLSETS = {
         "tools": ["web_search", "web_extract"],
         "includes": []  # No other toolsets included
     },
+
+    "document": {
+        "description": "Local document extraction via the localhost doc-tools sidecar, with URL fallback to web_extract",
+        "tools": ["document_extract"],
+        "includes": []
+    },
     
     "search": {
         "description": "Web search only (no content extraction/scraping)",
@@ -97,6 +108,17 @@ TOOLSETS = {
             "enable in `hermes tools` → X (Twitter) Search."
         ),
         "tools": ["x_search"],
+        "includes": []
+    },
+
+    "untrusted_link_sandbox": {
+        "description": "Containerized first-pass triage for untrusted URLs, repositories, and quarantined downloads",
+        "tools": [
+            "untrusted_link_triage",
+            "audit_untrusted_url",
+            "audit_untrusted_repo",
+            "inspect_untrusted_download",
+        ],
         "includes": []
     },
     
@@ -332,6 +354,9 @@ TOOLSETS = {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
         "tools": [
             "web_search", "web_extract",
+            # Untrusted link sandbox (gated on local Docker stack availability)
+            "untrusted_link_triage", "audit_untrusted_url",
+            "audit_untrusted_repo", "inspect_untrusted_download",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
@@ -352,6 +377,9 @@ TOOLSETS = {
         "tools": [
             # Web
             "web_search", "web_extract",
+            # Untrusted link sandbox (gated on local Docker stack availability)
+            "untrusted_link_triage", "audit_untrusted_url",
+            "audit_untrusted_repo", "inspect_untrusted_download",
             # Terminal + process management
             "terminal", "process",
             # File manipulation

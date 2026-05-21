@@ -47,6 +47,11 @@ class TestGetToolset:
         assert ts is not None
         assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
 
+    def test_document_toolset(self):
+        ts = get_toolset("document")
+        assert ts is not None
+        assert ts["tools"] == ["document_extract"]
+
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
 

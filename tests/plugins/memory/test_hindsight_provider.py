@@ -448,6 +448,7 @@ class TestToolHandlers:
         call_kwargs = provider._client.aretain.call_args.kwargs
         assert call_kwargs["bank_id"] == "test-bank"
         assert call_kwargs["content"] == "user likes dark mode"
+        assert call_kwargs["retain_async"] is True
 
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])

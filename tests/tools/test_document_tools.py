@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 
 from tools.document_tools import (
+    check_document_ai_requirements,
     check_document_tools_requirements,
+    document_ai_extract_tool,
     document_extract_tool,
 )
 
@@ -154,52 +156,94 @@ def test_document_tools_requirements_check_uses_health_endpoint(monkeypatch, tmp
     assert check_document_tools_requirements() is True
 
 
-def test_document_extract_paddleocr_vl_backend_posts_layout_parsing(monkeypatch, tmp_path):
-    source_path = tmp_path / "scan.pdf"
-    source_path.write_bytes(b"%PDF-1.4\n% tiny fake pdf for request-shape test\n")
-    intake_dir = tmp_path / "doc-tools" / "intake"
-    config = {
-        "document_tools": {
-            "base_url": "http://127.0.0.1:9478",
-            "intake_dir": str(intake_dir),
-            "timeout": 12,
-            "cleanup_after_extract": True,
-            "paddleocr_vl": {
-                "base_url": "http://paddle.example:8080",
-                "token": "secret-token",
-                "timeout": 34,
-            },
-        }
-    }
+def _set_document_ai_config(monkeypatch, base_url: str = "http://spark-doc-ai:8098", token: str = "test-token"):
+    config = {"document_ai": {"base_url": base_url, "token": token, "timeout": 34}}
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
 
+
+def test_document_ai_extract_calls_redacted_spark_endpoint_with_token(monkeypatch, tmp_path):
+    source_path = tmp_path / "scan.pdf"
+    source_path.write_bytes(b"%PDF-1.4\n")
+    _set_document_ai_config(monkeypatch)
     observed = {}
 
-    def fake_post(url, json=None, headers=None, timeout=None):
+    def fake_post(url, headers=None, json=None, params=None, timeout=None):
         observed["url"] = url
-        observed["payload"] = json
         observed["headers"] = headers
+        observed["params"] = params
         observed["timeout"] = timeout
+        observed["payload"] = json
         return _Response(
             {
                 "result": {
                     "layoutParsingResults": [
-                        {"markdown": {"text": "invoice total\n\n$123.45"}}
+                        {"markdown": {"text": "hello world"}, "backend": "docling"}
                     ]
-                }
+                },
+                "documentAiGateway": {"backend": "docling", "redacted": True},
+                "metadata": {},
             }
         )
 
     monkeypatch.setattr("tools.document_tools.httpx.post", fake_post)
 
-    result = json.loads(document_extract_tool(str(source_path), backend="paddleocr_vl"))
+    result = json.loads(document_ai_extract_tool(str(source_path), max_chars=5))
+
+    assert observed["url"] == "http://spark-doc-ai:8098/layout-parsing/redacted"
+    assert observed["headers"] == {"X-Document-AI-Token": "test-token"}
+    assert observed["params"] == {}
+    assert observed["timeout"] == 34
+    assert observed["payload"]["filename"] == "scan.pdf"
+    assert observed["payload"]["fileType"] == 0
+    assert observed["payload"]["file"] == "JVBERi0xLjQK"
+    assert result["ok"] is True
+    assert result["markdown"] == "hello"
+    assert result["markdown_truncated"] is True
+    assert result["metadata"]["backend_used"] == "spark_document_ai"
+    assert result["metadata"]["endpoint"] == "/layout-parsing/redacted"
+    assert result["metadata"]["redacted"] is True
+
+
+def test_document_ai_extract_can_call_unredacted_endpoint(monkeypatch, tmp_path):
+    source_path = tmp_path / "scan.pdf"
+    source_path.write_bytes(b"%PDF-1.4\n")
+    _set_document_ai_config(monkeypatch)
+    observed = {}
+
+    def fake_post(url, headers=None, json=None, params=None, timeout=None):
+        observed["url"] = url
+        observed["params"] = params
+        observed["payload"] = json
+        return _Response({"ok": True, "metadata": {}})
+
+    monkeypatch.setattr("tools.document_tools.httpx.post", fake_post)
+
+    result = json.loads(document_ai_extract_tool(str(source_path), redacted=False))
 
     assert result["ok"] is True
-    assert result["backend_used"] == "paddleocr_vl"
-    assert result["markdown"] == "invoice total\n\n$123.45"
-    assert result["structured_data"]["result"]["layoutParsingResults"]
-    assert observed["url"] == "http://paddle.example:8080/layout-parsing"
-    assert observed["payload"]["fileType"] == 0
-    assert observed["payload"]["file"]
-    assert observed["headers"]["Authorization"] == "token secret-token"
-    assert observed["timeout"] == 34
+    assert observed["url"] == "http://spark-doc-ai:8098/layout-parsing"
+    assert observed["params"] == {"redact": "false"}
+
+
+def test_document_ai_extract_requires_token(monkeypatch, tmp_path):
+    source_path = tmp_path / "scan.pdf"
+    source_path.write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"document_ai": {"base_url": "http://spark-doc-ai:8098"}})
+    for key in ("HERMES_DOCUMENT_AI_TOKEN", "DOCUMENT_AI_TOKEN", "SPARK_DOCUMENT_AI_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+
+    result = json.loads(document_ai_extract_tool(str(source_path)))
+
+    assert "Spark document-ai token is not configured" in result["error"]
+
+
+def test_document_ai_requirements_need_token_and_health(monkeypatch):
+    _set_document_ai_config(monkeypatch)
+    monkeypatch.setattr(
+        "tools.document_tools.httpx.get",
+        lambda url, timeout=None: _Response({"ok": True}),
+    )
+    monkeypatch.setattr("tools.document_tools._health_cache", {})
+
+    assert check_document_ai_requirements() is True
+

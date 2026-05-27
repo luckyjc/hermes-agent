@@ -72,6 +72,19 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_document_tools_defaults_present(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            doc_cfg = config["document_tools"]
+            assert doc_cfg["base_url"] == "http://127.0.0.1:9478"
+            assert doc_cfg["stack_dir"] == "~/docker/doc-tools"
+            assert doc_cfg["intake_dir"] == ""
+            assert doc_cfg["timeout"] == 120
+            assert doc_cfg["cleanup_after_extract"] is True
+            assert doc_cfg["paddleocr_vl"]["base_url"] == "http://127.0.0.1:8098"
+            assert doc_cfg["paddleocr_vl"]["token"] == ""
+            assert doc_cfg["paddleocr_vl"]["timeout"] == 600
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

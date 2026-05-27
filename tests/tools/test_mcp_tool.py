@@ -3462,6 +3462,27 @@ class TestMCPSelectiveToolLoading:
         assert connect_called == []
         assert result == []
 
+    def test_get_mcp_status_hides_disabled_servers(self):
+        from tools.mcp_tool import get_mcp_status
+
+        fake_config = {
+            "memory": {
+                "command": "/tmp/memory-server",
+                "args": ["server.py"],
+                "enabled": False,
+            },
+            "enabled_http": {
+                "url": "https://mcp.example.com",
+            },
+        }
+
+        with patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._servers", {}):
+            status = get_mcp_status()
+
+        assert [entry["name"] for entry in status] == ["enabled_http"]
+        assert status[0]["connected"] is False
+
 
 # ---------------------------------------------------------------------------
 # Tool name collision protection

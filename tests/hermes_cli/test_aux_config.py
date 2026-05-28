@@ -48,6 +48,15 @@ def test_session_search_no_longer_appears_in_auxiliary_model_config():
     assert "session_search" not in {key for key, _name, _desc in _AUX_TASKS}
 
 
+def test_document_tools_defaults_present_in_default_config():
+    doc_cfg = DEFAULT_CONFIG["document_tools"]
+    assert doc_cfg["base_url"] == "http://127.0.0.1:9478"
+    assert doc_cfg["stack_dir"] == "~/docker/doc-tools"
+    assert doc_cfg["intake_dir"] == ""
+    assert doc_cfg["timeout"] == 120
+    assert doc_cfg["cleanup_after_extract"] is True
+
+
 def test_aux_tasks_keys_all_exist_in_default_config():
     """Every task the menu offers must be defined in DEFAULT_CONFIG."""
     aux_keys = {k for k, _name, _desc in _AUX_TASKS}

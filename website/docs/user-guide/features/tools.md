@@ -24,6 +24,7 @@ High-level categories:
 | **X Search** | `x_search` | Search X (Twitter) posts and threads via xAI's built-in `x_search` Responses tool — gated on xAI credentials (SuperGrok OAuth or `XAI_API_KEY`); off by default, opt in via `hermes tools` → 🐦 X (Twitter) Search. |
 | **Terminal & Files** | `terminal`, `process`, `read_file`, `patch` | Execute commands and manipulate files. |
 | **Browser** | `browser_navigate`, `browser_snapshot`, `browser_vision` | Interactive browser automation with text and vision support. |
+| **Untrusted-link sandbox** | `untrusted_link_triage`, `audit_untrusted_url` | First-pass Docker triage for unfamiliar links, repositories, and quarantined downloads before exposing the normal Hermes runtime. |
 | **Media** | `vision_analyze`, `image_generate`, `video_generate`, `video_analyze`, `text_to_speech` | Multimodal analysis and generation. `video_generate` and `video_analyze` are opt-in (add `video_gen` / `video` toolsets via `hermes tools` or `--toolsets`). |
 | **Agent orchestration** | `todo`, `clarify`, `execute_code`, `delegate_task` | Planning, clarification, code execution, and subagent delegation. |
 | **Memory & recall** | `memory`, `session_search` | Persistent memory and session search. |
@@ -49,9 +50,21 @@ hermes tools
 hermes tools
 ```
 
-Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, `safe`, and `rl`.
+Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `untrusted_link_sandbox`, `vision`, `image_gen`, `moa`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, `safe`, and `rl`.
 
 See [Toolsets Reference](/reference/toolsets-reference) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
+
+## Runbook: Triage an Untrusted Link or Download
+
+Use the untrusted-link sandbox before opening unfamiliar user-provided links with normal web, browser, terminal, or file tools. The toolset is available only when the local Docker stack is installed and its wrapper contract is present.
+
+1. Verify availability with `hermes tools list` or by enabling `untrusted_link_sandbox` for the target platform in `hermes tools`.
+2. For a URL, call `untrusted_link_triage` first. Use `deep=true` for suspicious, redirect-heavy, JavaScript-heavy, or high-value sites.
+3. For a public GitHub/GitLab repository, call `audit_untrusted_repo` before cloning into a normal workspace.
+4. For browser-saved artifacts, keep them under the sandbox quarantine and call `inspect_untrusted_download` before opening elsewhere.
+5. Read the returned JSON summary and markdown report path. Treat ClamAV and heuristic findings as triage signals, not a clean-room guarantee.
+
+The default local stack path is `/home/lucky/docker/untrusted-link-sandbox`; override with `HERMES_UNTRUSTED_LINK_SANDBOX_DIR` when running a compatible stack elsewhere. A compatible stack must include `docker-compose.yml` plus executable wrappers for `triage`, `audit-url`, `audit-url-cdp`, `audit-repo`, and `inspect-download` under `bin/`. The stack source is versioned separately in Azure Repos as `untrusted-link-sandbox`.
 
 ## Terminal Backends
 

@@ -132,6 +132,55 @@ def test_bump_patch_increments_and_timestamps(skills_home):
     assert rec["last_patched_at"] is not None
 
 
+def test_bumps_append_metadata_only_events(skills_home, monkeypatch):
+    from tools.skill_usage import bump_patch, bump_use, bump_view, _usage_events_file
+
+    monkeypatch.setenv("HERMES_PROFILE", "test-profile")
+    monkeypatch.setenv("HERMES_SOURCE", "pytest")
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-123")
+    bump_view("my-skill")
+    bump_use("my-skill")
+    bump_patch("my-skill")
+
+    rows = [json.loads(line) for line in _usage_events_file().read_text().splitlines()]
+    assert [row["action"] for row in rows] == ["view", "use", "patch"]
+    assert {row["skill"] for row in rows} == {"my-skill"}
+    assert {row["profile"] for row in rows} == {"test-profile"}
+    assert {row["source"] for row in rows} == {"pytest"}
+    assert {row["session_id"] for row in rows} == {"session-123"}
+    for row in rows:
+        assert set(row) <= {"ts", "profile", "skill", "action", "source", "trigger", "session_id"}
+        assert "prompt" not in row
+        assert "content" not in row
+        assert "file_path" not in row
+
+
+def test_event_log_is_profile_local(tmp_path, monkeypatch):
+    import importlib
+    import tools.skill_usage as mod
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for home in (first, second):
+        (home / "skills").mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(first))
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    importlib.reload(mod)
+    mod.bump_use("shared-skill")
+
+    monkeypatch.setenv("HERMES_HOME", str(second))
+    importlib.reload(mod)
+    mod.bump_use("shared-skill")
+
+    assert (first / "skills" / ".usage_events.jsonl").exists()
+    assert (second / "skills" / ".usage_events.jsonl").exists()
+    first_row = json.loads((first / "skills" / ".usage_events.jsonl").read_text())
+    second_row = json.loads((second / "skills" / ".usage_events.jsonl").read_text())
+    assert first_row["profile"] == "first"
+    assert second_row["profile"] == "second"
+
+
 def test_bump_on_empty_name_is_noop(skills_home):
     from tools.skill_usage import bump_view, load_usage
     bump_view("")

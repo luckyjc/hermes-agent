@@ -270,6 +270,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "HERMES_DOCUMENT_AI_TOKEN", "DOCUMENT_AI_TOKEN", "SPARK_DOCUMENT_AI_TOKEN",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
@@ -1048,6 +1049,29 @@ DEFAULT_CONFIG = {
             # host alias while leaving CAMOFOX_URL itself unchanged.
             "rewrite_loopback_urls": False,
             "loopback_host_alias": "host.docker.internal",
+        },
+    },
+
+    "document_tools": {
+        # Local doc-tools sidecar base URL. Hermes stages local files into the
+        # intake directory below, then POSTs to this endpoint.
+        "base_url": "http://127.0.0.1:9478",
+        # Sibling stack root. Used to derive intake_dir when that key is unset.
+        "stack_dir": "~/docker/doc-tools",
+        # Optional explicit intake directory override. Empty means
+        # <stack_dir>/intake.
+        "intake_dir": "",
+        # Request timeout for sidecar extraction calls (seconds).
+        "timeout": 120,
+        # Remove staged temp files after extraction succeeds or fails.
+        "cleanup_after_extract": True,
+        # Optional PaddleOCR-VL service for high-quality PDF/image OCR.
+        # Backend uses POST {base_url}/layout-parsing and optional
+        # Authorization: token <token>; token may also come from env.
+        "paddleocr_vl": {
+            "base_url": "http://127.0.0.1:8098",
+            "token": "",
+            "timeout": 600,
         },
     },
 

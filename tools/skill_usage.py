@@ -86,6 +86,10 @@ def _usage_file() -> Path:
     return _skills_dir() / ".usage.json"
 
 
+def _usage_events_file() -> Path:
+    return _skills_dir() / ".usage_events.jsonl"
+
+
 @contextmanager
 def _usage_file_lock():
     """Serialize .usage.json read-modify-write cycles across processes."""
@@ -128,6 +132,65 @@ def _archive_dir() -> Path:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _profile_name() -> str:
+    """Return a compact profile label for telemetry events."""
+    explicit = os.environ.get("HERMES_PROFILE")
+    if explicit:
+        return explicit
+    home = get_hermes_home()
+    if home == (Path.home() / ".hermes"):
+        return "default"
+    return home.name
+
+
+def _event_source() -> str:
+    return os.environ.get("HERMES_SOURCE") or os.environ.get("HERMES_SESSION_SOURCE") or "unknown"
+
+
+def _session_id() -> Optional[str]:
+    for key in ("HERMES_SESSION_ID", "HERMES_CURRENT_SESSION_ID"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
+
+
+def append_event(skill_name: str, action: str, *, trigger: Optional[str] = None) -> None:
+    """Append a metadata-only skill usage event.
+
+    Event logging is best-effort and must never break skill operations. The
+    payload intentionally excludes prompts, skill content, file paths, and other
+    sensitive text. Per-profile event logs are used for profile analytics; the
+    existing .usage.json aggregate remains curator's fast state file.
+    """
+    if not skill_name or not action:
+        return
+    try:
+        event: Dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "profile": _profile_name(),
+            "skill": str(skill_name),
+            "action": str(action),
+            "source": _event_source(),
+            "trigger": trigger or "unknown",
+        }
+        sid = _session_id()
+        if sid:
+            event["session_id"] = sid
+        path = _usage_events_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, sort_keys=True, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.debug(
+            "append skill usage event failed for %s/%s: %s",
+            skill_name,
+            action,
+            e,
+            exc_info=True,
+        )
 
 
 def _parse_iso_timestamp(value: Any) -> Optional[datetime]:
@@ -594,6 +657,7 @@ def bump_view(skill_name: str) -> None:
         rec["view_count"] = int(rec.get("view_count") or 0) + 1
         rec["last_viewed_at"] = _now_iso()
     _mutate(skill_name, _apply)
+    append_event(skill_name, "view", trigger="skill_view")
 
 
 def bump_use(skill_name: str) -> None:
@@ -606,6 +670,7 @@ def bump_use(skill_name: str) -> None:
         rec["use_count"] = int(rec.get("use_count") or 0) + 1
         rec["last_used_at"] = _now_iso()
     _mutate(skill_name, _apply)
+    append_event(skill_name, "use", trigger="skill_load")
 
 
 def bump_patch(skill_name: str) -> None:
@@ -617,6 +682,7 @@ def bump_patch(skill_name: str) -> None:
         rec["patch_count"] = int(rec.get("patch_count") or 0) + 1
         rec["last_patched_at"] = _now_iso()
     _mutate(skill_name, _apply)
+    append_event(skill_name, "patch", trigger="skill_manage")
 
 
 def mark_agent_created(skill_name: str) -> None:

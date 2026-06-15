@@ -152,6 +152,18 @@ TOOLSETS = {
         "includes": []
     },
 
+    "document": {
+        "description": "Document extraction via the local doc-tools sidecar",
+        "tools": ["document_extract", "document_tools_health"],
+        "includes": []
+    },
+
+    "untrusted_link_sandbox": {
+        "description": "Disposable sandbox triage for untrusted URLs, public repos, and quarantined files",
+        "tools": ["untrusted_link_triage"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],

@@ -107,6 +107,17 @@ def test_judge_input_rejects_unknown_or_recovered_as_success():
         judgment.build_judge_input([recovered], max_source_chars=100)
 
 
+def test_judge_prompt_counters_observed_fence_and_assumption_shape_failures():
+    prompt = (SKILL / "templates" / "judge-prompt.md").read_text()
+
+    assert "first byte must be `{`" in prompt
+    assert "last byte must be `}`" in prompt
+    assert "Do not use Markdown or code fences" in prompt
+    assert "unverifiedAssumptions contains strings only, never objects" in prompt
+    assert '"unverifiedAssumptions":[]' in prompt
+    assert prompt.rfind("{{ATTRIBUTED_SOURCES}}") > prompt.index("Before returning")
+
+
 def test_judge_completion_extracts_native_summary_with_exact_provenance():
     judgment = load_script("fusion_judgment")
     completion = {

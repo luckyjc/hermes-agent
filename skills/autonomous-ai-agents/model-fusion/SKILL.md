@@ -88,7 +88,7 @@ Call `stage_judge`. Continue only when it returns true. A false result means no 
 Build the input from completed sources only with `build_judge_input`. Append `templates/judge-prompt.md`, replacing its source placeholder with the bounded attributed blocks. Then call native `delegate_task` once:
 
 ```json
-{"background": true, "lane": "judge", "goal": "Judge the attributed source findings and return only the required raw JSON object.", "context": "<run id plus bounded judge prompt>"}
+{"background": true, "lane": "judge", "goal": "Return the judgment as exactly one JSON object. The response must start with { and end with }; never use Markdown fences or prose.", "context": "<run id plus bounded judge prompt>"}
 ```
 
 The judge has no tools. Do not add fallback, provider, model, toolsets, or child-execution fields.

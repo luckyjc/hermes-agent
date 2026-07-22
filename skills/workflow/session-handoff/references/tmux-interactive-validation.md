@@ -1,72 +1,68 @@
 # tmux interactive handoff validation
 
-Last validated: 2026-05-15 on host-native Hermes v0.12.0 with `hcc` launcher.
+The helper must send only a short instruction containing the canonical handoff path. It must never paste the handoff body into a terminal.
 
-## Proven workflow
-
-Use the helper script with an actual SESSION HANDOFF file:
+## Deterministic checks
 
 ```bash
-python /home/lucky/docker/hermes/local-profiles/coding-cloud/skills/workflow/session-handoff/scripts/session_handoff_continue.py \
-  /tmp/session-handoff-YYYYmmdd-HHMMSS.md \
+python -m py_compile \
+  scripts/build_session_handoff.py \
+  scripts/session_handoff_continue.py
+
+python scripts/session_handoff_continue.py \
+  /tmp/athena-session-handoffs/NEXT_SESSION.md \
   --launcher hcc \
   --tmux-interactive \
-  --exit
-```
+  --dry-run
 
-The helper should:
-1. Verify `TMUX` and current pane with `tmux display-message -p '#{pane_id}'`.
-2. Start a new tmux split pane running plain interactive `hcc` by default. Use a new window only when explicitly requested with `--tmux-window`.
-3. Wait for the interactive Hermes prompt before pasting. Do not rely on a fixed sleep alone.
-4. Load the handoff file into a tmux buffer and paste it into the new pane with `paste-buffer -p -r`.
-5. Send Enter to submit the prompt.
-6. With `--exit`, send `/exit` to the old pane only after the new pane exists, prompt detection succeeded, and paste/submit succeeded. If any verification fails, leave the old pane open.
-
-## Validation commands used
-
-```bash
-/home/lucky/.local/opt/hermes/.venv/bin/python3 -m py_compile \
-  /home/lucky/docker/hermes/local-profiles/coding-cloud/skills/workflow/session-handoff/scripts/session_handoff_continue.py
-
-python /home/lucky/docker/hermes/local-profiles/coding-cloud/skills/workflow/session-handoff/scripts/session_handoff_continue.py \
-  /tmp/session-handoff-smoke.md \
+python scripts/session_handoff_continue.py \
+  /tmp/athena-session-handoffs/NEXT_SESSION.md \
   --launcher hcc \
+  --no-yolo \
   --tmux-interactive \
-  --tmux-window-name handoff-smoke \
-  --startup-wait 1 \
-  --prompt-wait-timeout 20
-
-tmux capture-pane -t handoff-smoke -p -S -120 > /tmp/handoff-smoke-capture.txt
-grep -q 'SESSION HANDOFF' /tmp/handoff-smoke-capture.txt
+  --dry-run
 ```
 
-Targeted Hermes skill-command tests:
+Expected default dry-run launcher arguments include `--yolo`; the opt-out run must not include it. `--manual` must work even when the requested launcher does not exist.
 
-```bash
-cd /home/lucky/.local/opt/hermes
-./scripts/run_tests.sh tests/agent/test_skill_commands.py -q
-```
+## Interactive smoke
 
-Expected result: `36 passed`.
-
-## Long-term tracking
-
-The durable copy of this skill now lives in the tracked Hermes runtime tree:
+Use a synthetic handoff whose next-session objective asks the receiver to reply with exactly:
 
 ```text
-/home/lucky/.local/opt/hermes/skills/workflow/session-handoff/SKILL.md
-/home/lucky/.local/opt/hermes/skills/workflow/session-handoff/scripts/session_handoff_continue.py
+HANDOFF TEST RECEIVED AS ONE PROMPT
 ```
 
-The profile-local copy under `/home/lucky/docker/hermes/local-profiles/coding-cloud/skills/workflow/session-handoff/` remains useful for active `hcc` sessions, but local profile directories may be ignored by git. When changing this workflow, update or sync the tracked runtime copy before committing so the skill survives profile cleanup/rebuilds.
+Launch it in a split without `--exit`. Capture the new pane and confirm:
 
-Related runtime commit: `477232773 fix: refresh skill slash command cache`, pushed to Azure `main` on 2026-05-15. That commit also added the tracked built-in skill files.
+1. One receiving prompt contains the complete canonical file path instruction.
+2. The receiver read the file and emitted the fixed phrase.
+3. No handoff-body text was pasted into the input pane.
+4. No repeated submission or interrupt loop occurred.
 
-## Pitfalls
+Clean up the test pane with `/exit` after verification.
 
-- `hermes skills list` may show a skill while a currently running interactive CLI still has a stale module-level `_skill_commands` cache. In Hermes v0.12.0, `/reload-skills` needed to refresh `cli.py`'s module-level `_skill_commands` from `get_skill_commands()` after `reload_skills()`.
-- `agent.skill_commands.scan_skill_commands()` returns keys with a leading slash, e.g. `/session-handoff`; checks against `get_skill_commands()` may need the same shape.
-- Do not test paste timing with a nonexistent handoff file; the helper correctly exits early before tmux behavior.
-- Fixed startup sleeps are brittle. Prefer prompt detection via `tmux capture-pane` before paste, with a timeout that refuses to exit the old pane on failure.
-- `tmux paste-buffer` replaces linefeeds with carriage returns by default. Use `-r` with `-p`; otherwise multiline handoffs can still submit one line at a time even though bracketed paste is enabled.
-- Profile-local skills under `/home/lucky/docker/hermes/local-profiles/*` may be ignored by the repo `.gitignore`; verify persistence/commit strategy before assuming skill changes are tracked.
+## Safety gates
+
+- Resolve and anchor to the caller pane or an explicit `--tmux-target`.
+- Wait for the interactive prompt; do not rely only on fixed sleep.
+- Use a named tmux buffer and `paste-buffer -p -r` for the short path instruction.
+- Verify replacement pane, prompt, paste, and submit before honoring `--exit`.
+- If tmux is unavailable, preserve the handoff file and use manual fallback.
+- On cutoff, pane lock, or TUI input regression, stop retrying automation. Never fall back to line-by-line `send-keys`.
+
+## Persistence
+
+The active profile copy is under:
+
+```text
+/home/lucky/docker/hermes/local-profiles/coding-cloud/skills/workflow/session-handoff/
+```
+
+The tracked runtime copy is under:
+
+```text
+/home/lucky/.local/opt/hermes/skills/workflow/session-handoff/
+```
+
+After a reviewed change, sync both copies and run validation from the tracked runtime repository before committing.

@@ -2,9 +2,10 @@
 """Launch a new Hermes continuation from a session handoff file.
 
 Conservative defaults:
-- Outside tmux: run a one-shot `launcher chat -q <handoff>` unless --background is used.
+- Outside tmux: run a one-shot `launcher chat -q <handoff-file instruction>` unless --background is used.
 - Inside tmux with --tmux-interactive: open a new interactive launcher window,
-  paste the handoff prompt into it, submit it, then optionally /exit the old pane.
+  paste a short instruction containing the handoff file location, submit it, then
+  optionally /exit the old pane.
 
 The helper only sends /exit to the old pane when explicitly requested, tmux is
 verified, and the continuation launch/paste succeeds.
@@ -14,7 +15,7 @@ from __future__ import annotations
 
 import argparse
 import os
-import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -26,13 +27,27 @@ def run(cmd: list[str], *, check: bool = False) -> subprocess.CompletedProcess[s
 
 
 def tmux_current_pane() -> str | None:
-    if not os.environ.get("TMUX"):
-        return None
+    # Some Hermes terminal tool invocations run inside a tmux client but do not
+    # preserve TMUX in the subprocess environment. Ask tmux directly first;
+    # outside tmux this simply fails and we fall back to manual/background modes.
     proc = run(["tmux", "display-message", "-p", "#{pane_id}"])
     if proc.returncode != 0:
         return None
     pane = proc.stdout.strip()
     return pane or None
+
+
+def tmux_target_exists(target: str) -> bool:
+    proc = run(["tmux", "display-message", "-t", target, "-p", "#{pane_id}"])
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def tmux_session_for_target(target: str) -> str | None:
+    proc = run(["tmux", "display-message", "-t", target, "-p", "#{session_id}"])
+    if proc.returncode != 0:
+        return None
+    session = proc.stdout.strip()
+    return session or None
 
 
 def tmux_pane_exists(pane_id: str) -> bool:
@@ -55,11 +70,51 @@ def wait_for_tmux_prompt(pane_id: str, prompt_marker: str, timeout: float) -> bo
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start Hermes continuation from handoff file")
     parser.add_argument("handoff_file", help="Path to SESSION HANDOFF markdown/text file")
-    parser.add_argument("--launcher", default="hcc", help="Hermes launcher command, default: hcc")
+    parser.add_argument("--launcher", default="hcc", help="Hermes launcher executable, default: hcc")
+    parser.add_argument(
+        "--launcher-arg",
+        action="append",
+        default=[],
+        help="Additional argument to pass to the launcher executable. Repeat for multiple args.",
+    )
+    yolo_group = parser.add_mutually_exclusive_group()
+    yolo_group.add_argument(
+        "--yolo",
+        dest="yolo",
+        action="store_true",
+        help="Launch with --yolo (default).",
+    )
+    yolo_group.add_argument(
+        "--no-yolo",
+        dest="yolo",
+        action="store_false",
+        help="Launch without --yolo.",
+    )
+    parser.set_defaults(yolo=True)
+    parser.add_argument(
+        "--manual",
+        action="store_true",
+        help="Validate and report the handoff file path without launching a continuation.",
+    )
     parser.add_argument("--background", action="store_true", help="Start one-shot continuation in background")
-    parser.add_argument("--tmux-interactive", action="store_true", help="When in tmux, start interactive launcher in a new window, paste handoff, submit")
+    parser.add_argument("--tmux-interactive", action="store_true", help="When in tmux, start interactive launcher in a split pane by default, paste handoff, submit")
     parser.add_argument("--tmux-window-name", default="session-handoff", help="Name for tmux interactive continuation window")
-    parser.add_argument("--tmux-exit-old", action="store_true", help="After interactive continuation starts, send /exit to the old pane")
+    parser.add_argument("--tmux-window", action="store_true", help="When in tmux interactive mode, open a new window instead of the default split pane")
+    parser.add_argument(
+        "--tmux-target",
+        help=(
+            "tmux pane/window/session target to anchor the continuation to. "
+            "Defaults to the pane detected when this helper starts. Splits land next to this target; "
+            "new windows land in this target's session."
+        ),
+    )
+    parser.add_argument(
+        "--exit",
+        "--tmux-exit-old",
+        dest="tmux_exit_old",
+        action="store_true",
+        help="After the verified interactive continuation is ready, send /exit to the old pane.",
+    )
     parser.add_argument("--startup-wait", type=float, default=1.0, help="Minimum seconds to wait before checking/pasting into new interactive window")
     parser.add_argument("--prompt-wait-timeout", type=float, default=30.0, help="Seconds to wait for the interactive prompt before pasting")
     parser.add_argument("--dry-run", action="store_true", help="Print what would run without executing")
@@ -70,47 +125,93 @@ def main() -> int:
         print(f"handoff file not found: {handoff_path}", file=sys.stderr)
         return 2
 
-    prompt = handoff_path.read_text(encoding="utf-8")
-    if not prompt.strip():
+    if not handoff_path.read_text(encoding="utf-8").strip():
         print(f"handoff file is empty: {handoff_path}", file=sys.stderr)
         return 2
 
-    launcher_path = run(["bash", "-lc", f"command -v {shlex.quote(args.launcher)}"])
-    if launcher_path.returncode != 0 or not launcher_path.stdout.strip():
+    if args.manual:
+        print(f"manual handoff requested; handoff_file={handoff_path}")
+        return 0
+
+    launcher_path = shutil.which(args.launcher)
+    if not launcher_path:
         print(f"launcher not found: {args.launcher}", file=sys.stderr)
         return 2
 
+    launcher_args = list(args.launcher_arg)
+    if args.yolo:
+        launcher_args.append("--yolo")
+    launcher_cmd = [launcher_path, *launcher_args]
+    launcher_printable = " ".join([args.launcher, *launcher_args])
+
     current_pane = tmux_current_pane()
-    one_shot_cmd = [args.launcher, "chat", "-q", prompt]
-    one_shot_printable = f"{args.launcher} chat -q $(cat {shlex.quote(str(handoff_path))})"
+    tmux_target = args.tmux_target or current_pane
+    # Never inject the handoff body into a new terminal. Large multiline pastes
+    # can be split or partially submitted by terminal/TUI layers. Every launch
+    # mode receives only this short path instruction and must read the canonical
+    # handoff file as its first action.
+    handoff_file_instruction = (
+        f"Read and follow the SESSION HANDOFF at {handoff_path}. "
+        "Use tools to inspect the file first, then continue the work."
+    )
+    one_shot_cmd = [*launcher_cmd, "chat", "-q", handoff_file_instruction]
+    background_cmd = [*launcher_cmd, "chat", "-q", handoff_file_instruction]
+    one_shot_printable = f"{launcher_printable} chat -q '<handoff-file instruction>'"
+    background_printable = f"{launcher_printable} chat -q '<handoff-file instruction>'"
 
     if args.dry_run:
         print(f"handoff_file={handoff_path}")
-        print(f"launcher={launcher_path.stdout.strip()}")
+        print(f"launcher={launcher_path}")
+        if launcher_args:
+            print(f"launcher_args={' '.join(launcher_args)}")
         print(f"tmux_current_pane={current_pane or '(not in tmux)'}")
+        print(f"tmux_target={tmux_target or '(none)'}")
         if args.tmux_interactive:
-            print(f"would_tmux_interactive={'yes' if current_pane else 'no (not in tmux)'}")
-            print(f"would_start_window={args.tmux_window_name}")
-            print(f"would_run_interactive={args.launcher}")
-            print(f"would_paste_handoff_file={handoff_path}")
+            print(f"would_tmux_interactive={'yes' if tmux_target else 'no (not in tmux)'}")
+            print(f"would_start_{'window' if args.tmux_window else 'pane'}={args.tmux_window_name}")
+            print(f"would_anchor_target={tmux_target or '(none)'}")
+            print(f"would_run_interactive={launcher_printable}")
+            print(f"would_paste_handoff_file_instruction={handoff_path}")
             print(f"would_exit_old_pane={'yes' if args.tmux_exit_old and current_pane else 'no'}")
         else:
-            print(f"would_run={one_shot_printable}")
+            print(f"would_run={background_printable if args.background else one_shot_printable}")
             if args.tmux_exit_old:
                 print("would_exit_old_pane=no (requires --tmux-interactive)")
         return 0
 
     if args.tmux_interactive:
-        if not current_pane:
-            print("--tmux-interactive requested but TMUX/current pane was not detected", file=sys.stderr)
+        if not tmux_target:
+            print("--tmux-interactive requested but TMUX/current pane was not detected and no --tmux-target was provided", file=sys.stderr)
             return 2
+        if not tmux_target_exists(tmux_target):
+            print(f"tmux target was not found: {tmux_target}", file=sys.stderr)
+            return 2
+        if args.tmux_exit_old and not current_pane:
+            print("--exit requires the current tmux pane to be detected; not closing any pane", file=sys.stderr)
+            return 2
+        assert tmux_target is not None
 
-        # Start plain interactive launcher. -P -F returns the new pane id so we can target it safely.
-        proc = run([
-            "tmux", "new-window", "-P", "-F", "#{pane_id}",
-            "-n", args.tmux_window_name,
-            args.launcher,
-        ])
+        # Start plain interactive launcher anchored to the pane/window/session that
+        # invoked the handoff. This keeps related continuations in the same IDE or
+        # tmux instance even if another tmux client/window becomes active before
+        # the helper runs. Use a new window only when explicitly requested.
+        if args.tmux_window:
+            target_session = tmux_session_for_target(tmux_target)
+            if not target_session:
+                print(f"could not resolve session for tmux target: {tmux_target}", file=sys.stderr)
+                return 2
+            proc = run([
+                "tmux", "new-window", "-t", target_session,
+                "-P", "-F", "#{pane_id}",
+                "-n", args.tmux_window_name,
+                *launcher_cmd,
+            ])
+        else:
+            proc = run([
+                "tmux", "split-window", "-t", tmux_target,
+                "-P", "-F", "#{pane_id}",
+                *launcher_cmd,
+            ])
         if proc.returncode != 0:
             print(proc.stderr or proc.stdout, file=sys.stderr)
             return proc.returncode or 1
@@ -120,7 +221,7 @@ def main() -> int:
             return 1
 
         time.sleep(max(0.0, args.startup_wait))
-        prompt_marker = f"{Path(args.launcher).name}>"
+        prompt_marker = f"{Path(launcher_path).name}>"
         if not wait_for_tmux_prompt(new_pane, prompt_marker, args.prompt_wait_timeout):
             print(
                 f"interactive prompt was not detected in tmux pane {new_pane} "
@@ -129,14 +230,16 @@ def main() -> int:
             )
             return 1
 
-        # Load a dedicated tmux buffer from file and paste it into the new pane.
-        # This avoids command-line/history exposure and handles multi-line prompts better than send-keys.
+        # Paste only the short handoff-file instruction. Do not paste the
+        # handoff body: large multiline input can be fragmented by the terminal
+        # or TUI and disrupt the receiving agent. Bracketed paste remains useful
+        # to preserve this instruction as one prompt.
         buffer_name = f"session-handoff-{os.getpid()}"
-        load = run(["tmux", "load-buffer", "-b", buffer_name, str(handoff_path)])
+        load = run(["tmux", "set-buffer", "-b", buffer_name, handoff_file_instruction])
         if load.returncode != 0:
             print(load.stderr or load.stdout, file=sys.stderr)
             return load.returncode or 1
-        paste = run(["tmux", "paste-buffer", "-d", "-b", buffer_name, "-t", new_pane])
+        paste = run(["tmux", "paste-buffer", "-p", "-r", "-d", "-b", buffer_name, "-t", new_pane])
         if paste.returncode != 0:
             print(paste.stderr or paste.stdout, file=sys.stderr)
             return paste.returncode or 1
@@ -145,7 +248,10 @@ def main() -> int:
             print(submit.stderr or submit.stdout, file=sys.stderr)
             return submit.returncode or 1
 
-        print(f"started interactive continuation in tmux pane {new_pane} from {handoff_path}")
+        print(
+            f"started verified interactive continuation in tmux pane {new_pane} "
+            f"from {handoff_path}"
+        )
         if args.tmux_exit_old:
             exit_proc = run(["tmux", "send-keys", "-t", current_pane, "/exit", "Enter"])
             if exit_proc.returncode != 0:
@@ -155,7 +261,7 @@ def main() -> int:
         return 0
 
     if args.background:
-        proc = subprocess.Popen(one_shot_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        proc = subprocess.Popen(background_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         print(f"started background one-shot continuation pid={proc.pid} from {handoff_path}")
         return 0
 

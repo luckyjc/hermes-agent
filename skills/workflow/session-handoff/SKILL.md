@@ -1,7 +1,7 @@
 ---
 name: session-handoff
-description: "End the current Hermes CLI session with a compact handoff summary for reopening in a fresh profile/session."
-version: 1.0.0
+description: "Continue current work in a fresh Hermes CLI session using compact repo-aware state and safe tmux automation."
+version: 2.0.0
 author: Athena
 license: MIT
 metadata:
@@ -11,99 +11,50 @@ metadata:
 
 # Session Handoff
 
-Use this skill when the user wants to continue the current work in a fresh Hermes CLI session or another Hermes profile, while preserving enough context from the current conversation to keep going.
+Use `/session-handoff` when the user wants to continue the current idea or workstream in a fresh Hermes CLI session. Do not use `/skill session-handoff`; `/skill` opens the skills hub.
 
-Support script: `scripts/session_handoff_continue.py` can launch a new continuation from the temp handoff file and, when explicitly requested and running under tmux, send `/exit` to the old pane. Validation notes and known pitfalls for the tmux flow are in `references/tmux-interactive-validation.md`.
+The handoff file is the continuity artifact. The new session must read it and then verify live project/system state before acting.
 
-The common local flow is to relaunch with `hcc`, but the handoff prompt should be profile-neutral unless the user names a target profile or command.
+## Defaults
 
-## Important limitation
+- Write the canonical handoff to `/tmp/athena-session-handoffs/NEXT_SESSION.md`.
+- Also create a persistent timestamped archive under `~/.local/state/hermes/session-handoffs/<profile>/`.
+- In tmux, open a visible split pane anchored to the caller and keep the current pane open.
+- Launch `hcc --yolo` by default.
+- Send only a short instruction containing the handoff path; never paste the handoff body into the terminal.
+- Use a new tmux window, background process, or old-pane exit only when explicitly requested.
+- Use manual-file-only mode when requested or when tmux/launcher prerequisites are unavailable.
 
-A skill cannot safely type `/exit` into the current interactive CLI, relaunch the user's parent shell, and paste into the new prompt from inside the same agent turn. The current agent process does not control its own parent terminal input stream in a reliable, portable way.
+## Flags
 
-So the default behavior is:
-1. Produce a handoff prompt.
-2. Write it to a temporary file, preferably under `/tmp`, and report the path.
-3. If the user wants a manual transition, stop there; do not include `/exit` or launch commands unless asked.
-4. If the user explicitly wants an automated transition, use the temp file as the single source of truth for the new-session prompt and launch the target Hermes CLI/profile with that prompt via its query flag when possible.
-5. Do not pretend the current interactive session was terminated or replaced unless a tool-based automation path was explicitly executed and verified.
+- `--manual`: write/finalize the handoff and stop. This does not require tmux or `hcc`.
+- `--no-yolo`: launch with normal approval behavior.
+- `--yolo`: explicit restatement of the default, retained for compatibility.
+- `--background`: start a one-shot continuation without an interactive pane.
+- `--window`: open a tmux window instead of the default split.
+- `--exit`, `--close`, or `--replace`: close the old pane only after the new interactive continuation is verified.
+- Other safe launcher flags: pass with repeatable `--launcher-arg <arg>`.
+- Other text: treat as the next-session focus, not a launcher argument.
 
-## Handoff procedure
+## Project context first
 
-When this skill is loaded or invoked:
+For project-scaffolded repos, use repo-local artifacts instead of copying their contents into the handoff:
 
-1. Create a concise but complete handoff prompt titled `SESSION HANDOFF`.
-2. Include only information needed to resume effectively:
-   - User's goal and current intent.
-   - What has already been done in this session.
-   - Important decisions, assumptions, constraints, and preferences.
-   - Relevant files, directories, repos, commands, services, tickets, URLs, job IDs, or process IDs.
-   - Current state of any edits or running processes.
-   - Validation already performed and results.
-   - Known failures, risks, and open questions.
-   - Exact next recommended steps.
-3. If the task involved code or filesystem changes, include:
-   - Absolute repo/path.
-   - Branch and git status if available.
-   - Tests/checks run and whether they passed.
-   - Uncommitted files or commits made.
-4. If the task involved external systems, include:
-   - What was changed externally.
-   - IDs/URLs/status codes or other verifiable handles.
-   - Anything not yet verified.
-5. Keep the handoff prompt compact enough to paste into a fresh session, but detailed enough for continuity. Prefer bullets over prose.
-6. Write the handoff prompt to a temp file. Use a timestamped path such as `/tmp/session-handoff-YYYYmmdd-HHMMSS.md` unless the user specifies a path.
-7. Do not include `/exit`, `hcc`, or other launch instructions in the handoff block itself. Keep transition mechanics separate from the saved context.
-8. If the user asks for automated continuation, prefer an interactive tmux continuation when tmux is detected:
+- `AGENTS.md`: stable project facts, contracts, commands, and constraints.
+- `.hermes/bootstrap.md`: startup/read order.
+- `docs/CURRENT_STATE.md`: mutable consolidated active state.
+- `docs/TESTING.md`: validation commands.
+- `CONTEXT.md` and `docs/adr/`: durable language and decisions.
 
-```bash
-python /home/lucky/docker/hermes/local-profiles/coding-cloud/skills/workflow/session-handoff/scripts/session_handoff_continue.py /tmp/session-handoff-YYYYmmdd-HHMMSS.md --launcher hcc --tmux-interactive --tmux-exit-old
-```
+Before finalizing, update `docs/CURRENT_STATE.md` when this session materially changed the active objective, blocker, proven state, validation plan, or next action. Consolidate and replace stale content; never treat it as an append-only session log. Do not touch it when no material project state changed.
 
-This opens a new tmux window running interactive `hcc`, pastes the handoff prompt from the temp file, submits it, and only then sends `/exit` to the old pane. If tmux is not detected, fall back to one-shot `hcc chat -q "$(cat file)"` or report the temp file path for manual use.
+The handoff should contain only the session delta and direct the next agent to authoritative artifacts. See `references/handoff-scenarios.md` for idea-development, AHO, interrupted-run, external-system, and sensitive-work variants.
 
-## Slash-command invocation
+## Handoff content
 
-Use the skill slash command directly:
+Target 400–800 words; hard maximum 1,200 words. Omit empty or irrelevant sections.
 
-```text
-/session-handoff
-```
-
-Do not use `/skill session-handoff` in this Hermes version. `/skill` is routed to the interactive skills hub, where the first argument is treated as a hub action, so it fails with `Unknown action: session-handoff`.
-
-Hermes builds bare slash commands for installed skills by scanning skill names, so this skill's command is `/session-handoff`. In Hermes v0.12.0 there was a stale CLI cache bug where `/reload-skills` updated `agent.skill_commands` but not `cli.py`'s module-level `_skill_commands`; if `/session-handoff` still says `Unknown command`, restart the CLI or use the patched runtime where `_reload_skills()` refreshes the CLI cache too.
-
-## Optional automated continuation path
-
-If the user explicitly asks to automate the terminal handoff:
-
-1. Save the handoff prompt to a temporary file under `/tmp` or the user's workspace.
-2. Verify the target launcher exists, for example `command -v hcc`.
-3. Use the bundled helper script when available. Always dry-run first:
-
-```bash
-python /home/lucky/docker/hermes/local-profiles/coding-cloud/skills/workflow/session-handoff/scripts/session_handoff_continue.py /tmp/session-handoff-YYYYmmdd-HHMMSS.md --launcher hcc --tmux-interactive --tmux-exit-old --dry-run
-```
-
-4. If the dry run detects `tmux_current_pane`, run the interactive handoff:
-
-```bash
-python /home/lucky/docker/hermes/local-profiles/coding-cloud/skills/workflow/session-handoff/scripts/session_handoff_continue.py /tmp/session-handoff-YYYYmmdd-HHMMSS.md --launcher hcc --tmux-interactive --tmux-exit-old
-```
-
-This starts plain interactive `hcc` in a new tmux window, waits for the interactive prompt, loads the handoff file into a tmux buffer, pastes it into the new pane, submits it, and only then sends `/exit` to the old pane.
-
-5. Only send `/exit` to the old pane when:
-   - the user explicitly requested automated handoff,
-   - `TMUX` is set and `tmux display-message -p '#{pane_id}'` returns a pane id,
-   - the new interactive tmux pane is verified,
-   - the handoff prompt was pasted and submitted successfully.
-6. If tmux is not detected, do not try to exit the old session. Start a one-shot continuation with `hcc chat -q "$(cat file)"` or report the temp file path for manual use.
-
-This approach creates the new continuation context programmatically without needing clipboard paste. The tmux path preserves an interactive session for continued work.
-
-## Handoff prompt template
+Required:
 
 ```text
 SESSION HANDOFF
@@ -111,19 +62,16 @@ SESSION HANDOFF
 Goal:
 - ...
 
-Current state:
+Next-session objective:
 - ...
 
-Completed this session:
+Progress and decisions:
 - ...
 
-Important context and constraints:
-- ...
+Authoritative artifacts:
+- <absolute paths or URLs; reference, do not duplicate>
 
-Files/repos/services involved:
-- ...
-
-Validation performed:
+Validation and live state:
 - ...
 
 Open risks / unknowns:
@@ -131,18 +79,57 @@ Open risks / unknowns:
 
 Next steps:
 1. ...
-2. ...
-3. ...
-
-Communication preferences:
-- Keep responses direct and operational.
-- Use tools to verify current system/file/git state before making factual claims.
 ```
 
-## Quality bar
+Add only when relevant:
 
-- Do not dump raw transcript text unless the user asks for it.
-- Do not include secrets, tokens, passwords, private keys, or payment details.
-- If something is uncertain, label it as uncertain.
-- If relevant state can be checked cheaply with tools before handoff, check it.
-- End with a clear instruction for the user to exit and relaunch the target Hermes CLI/profile.
+- `Suggested skills`
+- `Recommended AHO prompt shape`
+- `External systems`
+- `Communication preferences`
+
+Include absolute repo path, branch, dirty/untracked state, validation results, and commit/push state for code work. Include verifiable handles for external changes. Never include secrets, credentials, payment data, raw restricted transcript content, or transcript dumps.
+
+## Procedure
+
+1. Parse flags and focus text.
+2. Read the relevant project context files. Check live Git/system state cheaply when relevant.
+3. Consolidate `docs/CURRENT_STATE.md` if project state materially changed.
+4. Write the compact agent-authored body to a temporary draft file. It must begin with `SESSION HANDOFF`.
+5. Finalize it deterministically; this discovers standard project context, records UTC time/profile/project root/Git branch/dirty path count, enforces the word budget, writes the canonical pointer, and creates the persistent archive:
+
+```bash
+python /home/lucky/docker/hermes/local-profiles/coding-cloud/skills/workflow/session-handoff/scripts/build_session_handoff.py \
+  /tmp/session-handoff-draft.md \
+  --project-root "$PWD"
+```
+
+6. If `--manual`, report the canonical and archive paths and stop.
+7. Otherwise verify helper, launcher, and tmux target availability. In normal tmux use, launch the visible split:
+
+```bash
+python /home/lucky/docker/hermes/local-profiles/coding-cloud/skills/workflow/session-handoff/scripts/session_handoff_continue.py \
+  /tmp/athena-session-handoffs/NEXT_SESSION.md \
+  --launcher hcc \
+  --tmux-interactive
+```
+
+The helper enables YOLO by default. Add `--no-yolo`, `--background`, `--tmux-window`, `--tmux-target <target>`, or `--exit` only when selected by the user-facing flags.
+
+8. If prerequisites fail, preserve and report the canonical handoff path and the missing prerequisite. Do not claim a new session started and do not exit the current pane.
+
+## Receiving a handoff
+
+1. Read the handoff and its listed project context files first.
+2. Treat handoff claims as a compact hypothesis. Re-check branch, status, diff, artifacts, tests, processes, and external state before acting.
+3. Compare live state with the stated scope. Continue when they match; report drift rather than blessing stale claims.
+4. Resume from `Next-session objective`, unless the live user message overrides it.
+
+## Safety and validation
+
+- Never stream or paste multiline handoff bodies with `send-keys`.
+- The tmux helper waits for the prompt and bracket-pastes only the short file-path instruction.
+- Exit the old pane only after the replacement pane, prompt, paste, and submit are verified.
+- On paste cutoff, pane lock, or TUI injection failure, stop automation and fall back to the saved file path.
+- Use `--dry-run` after helper changes, on a new host/profile, or when prerequisites are uncertain; skip it during ordinary handoffs.
+- After changing this workflow, run Python compile checks, deterministic builder tests, dry runs for default/`--no-yolo`/`--manual`, and a synthetic interactive tmux smoke when safe. See `references/tmux-interactive-validation.md`.

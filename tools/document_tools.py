@@ -577,4 +577,3 @@ registry.register(
     emoji="📄",
     max_result_size_chars=12000,
 )
-

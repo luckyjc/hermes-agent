@@ -246,4 +246,3 @@ def test_document_ai_requirements_need_token_and_health(monkeypatch):
     monkeypatch.setattr("tools.document_tools._health_cache", {})
 
     assert check_document_ai_requirements() is True
-

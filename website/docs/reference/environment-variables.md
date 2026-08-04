@@ -171,6 +171,14 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HINDSIGHT_API_KEY` | Hindsight API key for graph-aware persistent memory ([hindsight.vectorize.io](https://hindsight.vectorize.io)) |
 | `HINDSIGHT_API_URL` | Base URL for the Hindsight API (default: `https://api.hindsight.vectorize.io`) |
 | `HINDSIGHT_TIMEOUT` | Timeout in seconds for Hindsight memory-provider API calls (default: `60`). Bump this if your Hindsight instance is slow to respond during `/sync` or `on_session_switch` and you're seeing timeouts in `errors.log`. |
+| `HERMES_DOC_TOOLS_BASE_URL` | Override the local doc-tools sidecar URL for `document_extract` (default: `http://127.0.0.1:9478`) |
+| `HERMES_DOC_TOOLS_STACK_DIR` | Override the local doc-tools stack directory used to find the intake mount |
+| `HERMES_DOC_TOOLS_INTAKE_DIR` | Override the host intake directory used to stage local documents before extraction |
+| `HERMES_DOC_TOOLS_TIMEOUT` | HTTP timeout in seconds for local doc-tools extraction |
+| `HERMES_DOCUMENT_AI_TOKEN` | Token for `document_ai_extract`; sent as `X-Document-AI-Token` |
+| `DOCUMENT_AI_TOKEN` / `SPARK_DOCUMENT_AI_TOKEN` | Alternate token names accepted by `document_ai_extract` |
+| `HERMES_DOCUMENT_AI_BASE_URL` | Override the document-AI layout-parsing gateway URL |
+| `HERMES_DOCUMENT_AI_TIMEOUT` | HTTP timeout in seconds for document-AI extraction |
 | `MEM0_API_KEY` | Mem0 Platform API key for semantic persistent memory ([app.mem0.ai](https://app.mem0.ai)) |
 | `MEM0_MODE` | Mem0 backend mode: `platform` (default) or `oss` — see [Memory Providers](/user-guide/features/memory-providers) |
 | `MEM0_HOST` | Base URL of a self-hosted Mem0 server (switches the plugin off the Platform API) |

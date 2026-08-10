@@ -1,0 +1,57 @@
+name: doc-tools
+
+# Source lives in the Hermes runtime repo. Runtime state defaults to the
+# historical local deployment directory so imports/rebuilds do not move staged
+# files, caches, or local env overrides.
+x-doc-tools-security: &doc-tools-security
+  restart: unless-stopped
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+      compress: "true"
+
+services:
+  doc-tools:
+    <<: *doc-tools-security
+    container_name: doc-tools
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: doc-tools:local
+    pull_policy: never
+    env_file:
+      - path: ${DOC_TOOLS_ENV_FILE:-/home/lucky/docker/doc-tools/.env}
+        required: false
+    environment:
+      DOC_TOOLS_HOST: 0.0.0.0
+      DOC_TOOLS_PORT: ${DOC_TOOLS_PORT:-9478}
+      DOC_TOOLS_MAX_FILE_MB: ${DOC_TOOLS_MAX_FILE_MB:-100}
+      DOC_TOOLS_ALLOWED_ROOTS: /data/intake
+      DOC_TOOLS_CACHE_DIR: /data/cache
+      DOC_TOOLS_LOG_LEVEL: ${DOC_TOOLS_LOG_LEVEL:-info}
+      TMPDIR: /tmp
+    ports:
+      - "127.0.0.1:${DOC_TOOLS_PORT:-9478}:${DOC_TOOLS_PORT:-9478}"
+    volumes:
+      - type: bind
+        source: ${DOC_TOOLS_STATE_DIR:-/home/lucky/docker/doc-tools}/intake
+        target: /data/intake
+      - type: bind
+        source: ${DOC_TOOLS_STATE_DIR:-/home/lucky/docker/doc-tools}/cache
+        target: /data/cache
+      - type: bind
+        source: ${DOC_TOOLS_STATE_DIR:-/home/lucky/docker/doc-tools}/tmp
+        target: /tmp
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${DOC_TOOLS_PORT:-9478}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s

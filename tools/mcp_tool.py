@@ -6965,6 +6965,9 @@ def get_mcp_status() -> List[dict]:
         connect_errors = dict(_server_connect_errors)
 
     for name, cfg in configured.items():
+        # Disabled servers are intentionally present in config for easy
+        # re-enable. Surface that state distinctly instead of hiding them or
+        # reporting them as failed.
         transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
         enabled = _parse_boolish(cfg.get("enabled", True), default=True)
         server = active_servers.get(name)

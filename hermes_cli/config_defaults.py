@@ -454,6 +454,19 @@ DEFAULT_CONFIG = {
     #   - max_snapshots: 50 -> 20  (now actually enforced via ref rewrite)
     #   - auto_prune:   False -> True (orphans/stale pruned automatically)
     # Opt in via ``hermes chat --checkpoints`` or set enabled=True here.
+    "document_tools": {
+        "base_url": "http://127.0.0.1:9478",
+        "stack_dir": "~/docker/doc-tools",
+        "intake_dir": "",
+        "timeout": 120,
+        "cleanup_after_extract": True,
+        "paddleocr_vl": {
+            "base_url": "http://127.0.0.1:8098",
+            "token": "",
+            "timeout": 600,
+        },
+    },
+
     "checkpoints": {
         "enabled": False,
         # Max checkpoints to keep per working directory.  Pre-v2 this only

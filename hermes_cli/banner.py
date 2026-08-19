@@ -396,6 +396,10 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir = None if embedded_rev else _resolve_repo_dir()
+    checkout_rev = embedded_rev or (
+        _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
+    )
 
     # Docker images have no working tree to count commits against — the
     # published image excludes `.git` (see .dockerignore) and sets no
@@ -421,6 +425,7 @@ def check_for_updates() -> Optional[int]:
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
+                and cached.get("checkout_rev") == checkout_rev
             ):
                 return cached.get("behind")
     except Exception:
@@ -432,10 +437,7 @@ def check_for_updates() -> Optional[int]:
         # Prefer the running code's location over the profile-scoped path.
         # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
         # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
+        if repo_dir is None:
             # No git checkout and no embedded revision — can't determine
             # update status. This is the Docker path (already short-circuited
             # above) or an unsupported install without a source tree.
@@ -445,7 +447,13 @@ def check_for_updates() -> Optional[int]:
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
+            json.dumps({
+                "ts": now,
+                "behind": behind,
+                "rev": embedded_rev,
+                "ver": VERSION,
+                "checkout_rev": checkout_rev,
+            }),
             encoding="utf-8",
         )
     except Exception:
@@ -731,7 +739,16 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
             behind = _update_result
             if behind is None or behind == 0:
                 return
-            console.print(_format_update_notice(behind))
+            # This runs after the interactive prompt has taken ownership of
+            # stdout. Rich ANSI emitted from this background thread is escaped
+            # by prompt_toolkit on some terminals (rendering literal
+            # ``?[1;33m`` fragments). The normal in-banner path remains styled;
+            # late notices deliberately use plain text so they cannot corrupt
+            # the prompt or a concurrent tmux paste.
+            from rich.text import Text
+
+            notice = Text.from_markup(_format_update_notice(behind)).plain
+            console.print(notice, markup=False)
         except Exception:
             pass  # never break the session over an update notice
 

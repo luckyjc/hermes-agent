@@ -2213,6 +2213,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     context=context,
                     tags=args.get("tags"),
                     occurred_at=args.get("occurred_at"),
+                    retain_async=self._retain_async,
                 )
                 # aretain_batch takes bank_id/retain_async as call args, not item keys.
                 item.pop("bank_id", None)

@@ -1,0 +1,18 @@
+# Environment overrides
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime data
+cache/*
+!cache/.gitkeep
+tmp/*
+!tmp/.gitkeep
+intake/*
+!intake/.gitkeep
+
+# Local editor/runtime noise
+.DS_Store

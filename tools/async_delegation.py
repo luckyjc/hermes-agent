@@ -248,6 +248,8 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
             # restart-recovered completion can reconstruct a full
             # SessionSource — see _capture_routing_origin.
             "scope_id", "user_id", "user_name",
+            # Private runtime routing policy and per-task lane selections.
+            "lane", "lanes",
         )
         if key in record
     }
@@ -368,6 +370,7 @@ def recover_abandoned_delegations() -> int:
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+                "lane": task.get("lane"), "lanes": task.get("lanes"),
                 "status": "unknown", "summary": None,
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
@@ -1001,6 +1004,16 @@ def _push_completion_event(
     ):
         if _k in result:
             evt[_k] = result[_k]
+    for key in (
+        "lane",
+        "requested_provider",
+        "requested_model",
+        "actual_provider",
+        "actual_model",
+        "fallback_used",
+    ):
+        if key in result:
+            evt[key] = result.get(key)
     _persist_completion(evt, result)
     try:
         process_registry.completion_queue.put(evt)
@@ -1028,6 +1041,7 @@ def dispatch_async_delegation_batch(
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    lanes: Optional[List[Optional[str]]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -1074,6 +1088,7 @@ def dispatch_async_delegation_batch(
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
         "is_batch": True,
+        "lanes": list(lanes) if lanes else None,
         "progress_fn": progress_fn,
         "_progress_token": None,
         "_progress_ts": dispatched_at,
@@ -1215,6 +1230,13 @@ def _push_batch_completion_event(
     ):
         if _k in combined:
             evt[_k] = combined[_k]
+    lane_names = [
+        result.get("lane")
+        for result in (combined.get("results") or [])
+        if isinstance(result, dict) and result.get("lane")
+    ]
+    if lane_names:
+        evt["lanes"] = lane_names
     _persist_completion(evt, combined)
     try:
         process_registry.completion_queue.put(evt)

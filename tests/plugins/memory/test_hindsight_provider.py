@@ -706,6 +706,10 @@ class TestPrefetchServerRetainVisibility:
 
         provider._client = self._client_with_ops(["pending", "pending", "completed"])
         provider._client.arecall = AsyncMock(side_effect=_recall)
+        # Keep this unit test independent of scheduler load. The production
+        # interval intentionally limits server polling, but this mocked status
+        # sequence needs no wall-clock delay between deterministic responses.
+        provider._RETAIN_OP_POLL_INTERVAL_S = 0.01
 
         provider.sync_turn("hello", "world")
         provider._retain_queue.join()

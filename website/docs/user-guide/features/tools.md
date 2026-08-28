@@ -24,7 +24,8 @@ High-level categories:
 | **X Search** | `x_search` | Search X (Twitter) posts and threads via xAI's built-in `x_search` Responses tool — gated on xAI credentials (SuperGrok OAuth or `XAI_API_KEY`); off by default, opt in via `hermes tools` → 🐦 X (Twitter) Search. |
 | **Terminal & Files** | `terminal`, `process`, `read_file`, `patch` | Execute commands and manipulate files. |
 | **Browser** | `browser_navigate`, `browser_snapshot`, `browser_vision` | Interactive browser automation with text and vision support. |
-| **Media** | `vision_analyze`, `image_generate`, `text_to_speech` | Multimodal analysis and generation. |
+| **Untrusted-link sandbox** | `untrusted_link_triage`, `audit_untrusted_url` | First-pass Docker triage for unfamiliar links, repositories, and quarantined downloads before exposing the normal Hermes runtime. |
+| **Media** | `vision_analyze`, `image_generate`, `video_generate`, `video_analyze`, `text_to_speech` | Multimodal analysis and generation. `video_generate` and `video_analyze` are opt-in (add `video_gen` / `video` toolsets via `hermes tools` or `--toolsets`). |
 | **Agent orchestration** | `todo`, `clarify`, `execute_code`, `delegate_task` | Planning, clarification, code execution, and subagent delegation. |
 | **Memory & recall** | `memory`, `session_search` | Persistent memory and session search. |
 | **Automation** | `cronjob` | Scheduled tasks with create/list/update/pause/resume/run/remove actions. Outbound delivery is handled by cron's own delivery, the `hermes send` CLI, and the gateway notifier — not by an agent-callable tool. |
@@ -49,7 +50,7 @@ hermes tools
 hermes tools
 ```
 
-Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, and `safe`.
+Common toolsets include `web`, `search`, `terminal`, `file`, `read_only_file`, `browser`, `untrusted_link_sandbox`, `vision`, `image_gen`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, `safe`, and `rl` when the corresponding integration is available.
 
 See [Toolsets Reference](/reference/toolsets-reference) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
 
@@ -59,6 +60,18 @@ A few tool behaviors are worth knowing when you read agent transcripts:
 
 - **Signal deaths are explained.** When a terminal command is killed by a signal, the result carries a human-readable note instead of a bare numeric code — e.g. exit `-9`/`137` becomes "terminated by signal 9: SIGKILL — often the kernel OOM killer on memory exhaustion, or an explicit kill -9", and segfaults, aborts, SIGTERM, broken pipes, and CPU/file-size limits are labeled the same way. Negative codes (subprocess semantics) are stated definitively; the shell's `128+signum` convention is hedged with "usually" since an application can legitimately exit with those codes.
 - **UTF-16 text files are transcoded, not refused.** `read_file` detects UTF-16 (BOM or byte-pattern heuristic, either endianness — common for Windows Notepad files and PowerShell `>` redirects) and transcodes it to UTF-8 for display instead of flagging the file as binary. The result includes a hint disclosing the conversion; edits via `patch`/`write_file` re-encode as UTF-8. Files over 10 MB and genuinely binary files still get the binary-file refusal.
+
+## Runbook: Triage an Untrusted Link or Download
+
+Use the untrusted-link sandbox before opening unfamiliar user-provided links with normal web, browser, terminal, or file tools. The toolset is available only when the local Docker stack is installed and its wrapper contract is present.
+
+1. Verify availability with `hermes tools list` or by enabling `untrusted_link_sandbox` for the target platform in `hermes tools`.
+2. For a URL, call `untrusted_link_triage` first. Use `deep=true` for suspicious, redirect-heavy, JavaScript-heavy, or high-value sites.
+3. For a public GitHub/GitLab repository, call `audit_untrusted_repo` before cloning into a normal workspace.
+4. For browser-saved artifacts, keep them under the sandbox quarantine and call `inspect_untrusted_download` before opening elsewhere.
+5. Read the returned JSON summary and markdown report path. Treat ClamAV and heuristic findings as triage signals, not a clean-room guarantee.
+
+The default local stack path is `/home/lucky/docker/untrusted-link-sandbox`; override with `HERMES_UNTRUSTED_LINK_SANDBOX_DIR` when running a compatible stack elsewhere. A compatible stack must include `docker-compose.yml` plus executable wrappers for `triage`, `audit-url`, `audit-url-cdp`, `audit-repo`, and `inspect-download` under `bin/`. The stack source is versioned separately in Azure Repos as `untrusted-link-sandbox`.
 
 ## Terminal Backends
 

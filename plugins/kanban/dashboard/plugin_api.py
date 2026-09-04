@@ -112,11 +112,15 @@ def _require(getter: Callable, conn: sqlite3.Connection, ident, label: str):
     return obj
 
 
-def _run_aux(board: Optional[str], module: str, fn: str, task_id: str, author: Optional[str]) -> Any:
+def _run_aux(
+    board: Optional[str], module: str, fn: str, task_id: str, author: Optional[str], **kwargs: Any,
+) -> Any:
     """Run a slow auxiliary-LLM task helper (``hermes_cli.<module>.<fn>``) with the board pinned;
     the module is imported lazily so a missing aux client can't break plugin load."""
     def _run():
-        return getattr(importlib.import_module(f"hermes_cli.{module}"), fn)(task_id, author=(author or None))
+        return getattr(importlib.import_module(f"hermes_cli.{module}"), fn)(
+            task_id, author=(author or None), **kwargs,
+        )
     return _with_board_pinned(board, _run)
 
 
@@ -368,6 +372,10 @@ class CreateTaskBody(BaseModel):
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
+    task_type: str = "other"
+    risk_level: str = "low"
+    review_policy: str = "none"
+    reviewer_profile: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -477,6 +485,11 @@ class UpdateTaskBody(BaseModel):
     # Handoff fields forwarded to complete_task on -> 'done' (parity with ``hermes kanban complete``).
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    review_verdict: Optional[str] = None
+    reviewer_profile: Optional[str] = None
+    review_policy: Optional[str] = None
+    task_type: Optional[str] = None
+    risk_level: Optional[str] = None
     # In a PATCH ``None`` means "field not sent", so ``clear_*=True`` is the explicit clear signal.
     # ``reasoning_effort="none"`` is a VALUE (thinking off); it is cleared separately so
     # dropping a model override doesn't silently reset the depth.
@@ -496,6 +509,8 @@ class BulkTaskBody(BaseModel):
     result: Optional[str] = None
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    review_verdict: Optional[str] = None
+    reviewer_profile: Optional[str] = None
     reclaim_first: bool = False
     # Same semantics as UpdateTaskBody.
     model_override: Optional[str] = None
@@ -528,11 +543,14 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
 # detection) with ``force=True``: a dashboard action is a human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
-    "done": lambda conn, tid, p: kanban_db.complete_task(conn, tid, result=p.result, summary=p.summary, metadata=p.metadata),
+    "done": lambda conn, tid, p: kanban_db.complete_task(
+        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata,
+        review_verdict=p.review_verdict, reviewer_profile=p.reviewer_profile),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(
-        conn, tid, summary=p.summary, metadata=p.metadata, reviewer=(p.assignee or None), force=True),
+        conn, tid, summary=p.summary, metadata=p.metadata,
+        reviewer=(p.assignee or p.reviewer_profile or None), force=True),
     "ready": lambda conn, tid, p: _drag_to(conn, tid, "ready"),
     "todo": lambda conn, tid, p: _drag_to(conn, tid, "todo"),
     "triage": lambda conn, tid, p: _drag_to(conn, tid, "triage")}
@@ -569,6 +587,22 @@ def _apply_reasoning_effort(conn, task_id: str, p) -> bool:
     return kanban_db.set_reasoning_effort(conn, task_id, None if p.clear_reasoning_effort else p.reasoning_effort)
 
 
+def _apply_review_policy(conn, task_id: str, payload: UpdateTaskBody) -> bool:
+    current = _require_task(conn, task_id)
+    return kanban_db.set_review_policy(
+        conn,
+        task_id,
+        review_policy=payload.review_policy or current.review_policy,
+        reviewer_profile=(
+            payload.reviewer_profile
+            if payload.review_policy is not None and payload.reviewer_profile is not None
+            else current.reviewer_profile
+        ),
+        task_type=payload.task_type,
+        risk_level=payload.risk_level,
+    )
+
+
 # Override knobs shared by PATCH and bulk: (payload wants it?, apply, bulk refusal message).
 _OVERRIDE_OPS = (
     (lambda p: p.clear_model_override or p.model_override is not None, _apply_model_override, "model override refused"),
@@ -583,7 +617,7 @@ def _patch_status(conn, task_id: str, payload: UpdateTaskBody, review_assignee_d
     if s == "archived":
         ok = kanban_db.archive_task(conn, task_id)
     else:
-        with _map_errors(400, _StatusRejected):
+        with _map_errors(400, _StatusRejected), _map_errors(409, kanban_db.ReviewGateError):
             ok = _apply_status(conn, task_id, s, payload, f"unknown status: {s}")
         if s == "review" and ok and review_assignee_deferred and not payload.assignee:
             ok = kanban_db.assign_task(conn, task_id, None)
@@ -628,6 +662,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         if payload.assignee is not None and not review_assignee_deferred:
             with _map_errors(409, RuntimeError):
                 _require_ok(kanban_db.assign_task(conn, task_id, payload.assignee or None))
+        if any(value is not None for value in (payload.review_policy, payload.task_type, payload.risk_level)):
+            with (
+                _map_errors(400, ValueError, RuntimeError),
+                _map_errors(409, kanban_db.ReviewGateError),
+            ):
+                _require_ok(_apply_review_policy(conn, task_id, payload))
         if payload.status is not None:
             _patch_status(conn, task_id, payload, review_assignee_deferred)
         for wanted, apply, _refused in _OVERRIDE_OPS:
@@ -1515,13 +1555,17 @@ def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
 
 class DecomposeBody(BaseModel):
     author: Optional[str] = None
+    reviewer: Optional[str] = None
 
 
 @router.post("/tasks/{task_id}/decompose")
 def decompose_task_endpoint(task_id: str, payload: DecomposeBody, board: Optional[str] = Query(None)):
     """Fan a triage task out into child tasks via the auxiliary LLM (``hermes kanban decompose``).
     Non-OK is NOT an HTTP error. Sync ``def`` → runs in the threadpool."""
-    outcome = _run_aux(board, "kanban_decompose", "decompose_task", task_id, payload.author)
+    outcome = _run_aux(
+        board, "kanban_decompose", "decompose_task", task_id, payload.author,
+        reviewer=payload.reviewer,
+    )
     return {
         "ok": bool(outcome.ok), "task_id": outcome.task_id, "reason": outcome.reason,
         "fanout": bool(outcome.fanout), "child_ids": outcome.child_ids or [], "new_title": outcome.new_title}

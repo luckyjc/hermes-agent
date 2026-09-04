@@ -29,6 +29,13 @@ from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
 )
 from hermes_cli.kanban_specify import _profile_author as _specify_author
+from hermes_cli.kanban_review import (
+    ReviewGateError,
+    normalize_review_policy,
+    normalize_risk_level,
+    normalize_task_type,
+    select_reviewer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +61,10 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
-        "parents": [<int>, ...]
+        "parents": [<int>, ...],
+        "task_type": "implementation|architecture|security|research|documentation|operations|other",
+        "risk": "low|material|security|architecture",
+        "review_policy": "required|none"
       },
       ...
     ]
@@ -73,6 +83,9 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - Mark material code/implementation, security, and architecture work with
+    review_policy="required". Use "none" only for genuinely non-material work.
+    The system selects a named independent reviewer profile structurally.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -82,7 +95,10 @@ return:
     "rationale": "<one sentence>",
     "title": "<tightened title>",
     "body":  "<concrete spec for a single worker>",
-    "assignee": "<profile name from the roster, or null for default>"
+    "assignee": "<profile name from the roster, or null for default>",
+    "task_type": "<one task_type above>",
+    "risk": "<one risk above>",
+    "review_policy": "required|none"
   }
 
 In that case the task stays as one work item, just with a tightened spec and
@@ -198,9 +214,10 @@ class _Routing:
     auto_promote: bool
     roster: list[dict]
     valid_names: set[str]
+    reviewer_override: Optional[str] = None
 
 
-def _load_routing() -> _Routing:
+def _load_routing(reviewer: Optional[str] = None) -> _Routing:
     cfg = _load_config()
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
@@ -210,7 +227,37 @@ def _load_routing() -> _Routing:
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
+        reviewer_override=reviewer.strip().lower() if reviewer and reviewer.strip() else None,
     )
+
+
+def _review_fields(entry: dict, *, implementer: str, routing: _Routing) -> dict:
+    """Normalize explicit decomposition policy and select its independent role."""
+    task_type = normalize_task_type(entry.get("task_type"))
+    risk_level = normalize_risk_level(entry.get("risk_level", entry.get("risk")))
+    review_policy = normalize_review_policy(entry.get("review_policy"))
+    if (
+        task_type in {"implementation", "security", "architecture"}
+        and risk_level in {"material", "security", "architecture"}
+    ):
+        # Auxiliary-model prose cannot waive the structural gate for material
+        # implementation. Operators can still create an explicit no-review task.
+        review_policy = "required"
+    reviewer_profile = None
+    if review_policy == "required":
+        reviewer_profile = select_reviewer(
+            task_type=task_type,
+            risk_level=risk_level,
+            implementer=implementer,
+            available_profiles=routing.valid_names,
+            explicit_reviewer=routing.reviewer_override,
+        )
+    return {
+        "task_type": task_type,
+        "risk_level": risk_level,
+        "review_policy": review_policy,
+        "reviewer_profile": reviewer_profile,
+    }
 
 
 def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
@@ -223,9 +270,15 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
         )
     if title_val is None and body_val is None:
         return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body")
+    implementer = assignee_val or task.assignee or routing.default_assignee
+    try:
+        review_fields = _review_fields(parsed, implementer=implementer, routing=routing)
+    except (ValueError, ReviewGateError) as exc:
+        return DecomposeOutcome(task.id, False, f"invalid review policy: {exc}")
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
+            **review_fields,
         )
     if not ok:
         return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
@@ -256,12 +309,17 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
             parents = []
+        try:
+            review_fields = _review_fields(entry, implementer=chosen, routing=routing)
+        except (ValueError, ReviewGateError) as exc:
+            return [], f"tasks[{idx}] has invalid review policy: {exc}"
         children.append({
             "title": title.strip()[:200],
             "body": body.strip() if isinstance(body, str) else "",
             "assignee": chosen,
             # Drop non-int, out-of-range and self parent indices.
             "parents": [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx],
+            **review_fields,
         })
     return children, ""
 
@@ -300,6 +358,7 @@ def decompose_task(
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
+    reviewer: Optional[str] = None,
 ) -> DecomposeOutcome:
     """Decompose a triage task into a graph of child tasks. Expected failures
     (not in triage, no aux client, API error, malformed/empty reply) surface
@@ -308,7 +367,7 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
-    routing = _load_routing()
+    routing = _load_routing(reviewer)
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(

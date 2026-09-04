@@ -58,6 +58,10 @@ def _triage_sweep_args(verb: str, Verb: str, noun: str):
         _arg("--tenant", help="When used with --all, restrict the sweep to this tenant"),
         _arg("--author",
              help=f"Author name recorded on the audit comment (default: $HERMES_PROFILE or '{noun}')"),
+        *(
+            (_arg("--reviewer", help="Explicit reviewer profile for every review-required child"),)
+            if verb == "decompose" else ()
+        ),
         _json_flag(help="Emit one JSON object per task on stdout"),
     )
 
@@ -198,6 +202,16 @@ _SPECS = [
              help="Initial card status. Use 'blocked' for cards "
                   "that require immediate human ops (R3 gate) "
                   "to skip the brief running-to-blocked transition."),
+        _arg("--task-type", choices=(
+            "implementation", "architecture", "security", "research",
+            "documentation", "operations", "other"), default="other",
+             help="Explicit task classification used by review policy (default: other)"),
+        _arg("--risk", dest="risk_level", choices=("low", "material", "security", "architecture"),
+             default="low", help="Explicit task risk used by review routing (default: low)"),
+        _arg("--review-policy", choices=("none", "required"), default="none",
+             help="Structural completion policy. 'none' preserves direct completion; 'required' needs an independent approval."),
+        _arg("--reviewer", dest="reviewer_profile",
+             help="Named reviewer profile for --review-policy required; must differ from the implementer"),
         _json_flag(help="Emit JSON output"),
     ], help="Create a new task"),
     _cmd("swarm", [
@@ -281,6 +295,10 @@ _SPECS = [
         _arg("--metadata",
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
+        _arg("--review-verdict", choices=("approve",),
+             help="Required-review approval verdict. Only 'approve' is accepting."),
+        _arg("--reviewer", dest="reviewer_profile",
+             help="Reviewer assertion for a claimed review run; persisted task_runs.profile is authoritative."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

@@ -59,7 +59,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   (e.g. one per project, repo, or domain); see [Boards (multi-project)](#boards-multi-project)
   below. Single-project users stay on the `default` board and never see the
   word "board" outside this docs section.
-- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | review | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
+- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | review | done | archived`), explicit `task_type`, `risk_level`, and `review_policy` (`none | required`), optional named reviewer, tenant namespace, and idempotency key. Migrated tasks default to `review_policy=none` for compatibility.
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
@@ -357,6 +357,23 @@ Three reasons:
 **Zero schema footprint on normal sessions.** A regular `hermes chat` session has zero `kanban_*` tools in its schema unless the active profile explicitly enables the `kanban` toolset for orchestrator work. Dispatcher-spawned task workers get task-scoped tools because `HERMES_KANBAN_TASK` is set; orchestrator profiles get the broader routing surface through config. No tool bloat for users who never touch kanban.
 
 The auto-injected kanban guidance teaches the model which tool to call when and in what order.
+
+### Structural independent-review policy
+
+Review requirements are task fields, never phrases parsed from the title/body. Create material work with an explicit policy:
+
+```bash
+hermes kanban create "Implement token rotation" \
+  --assignee backend-eng \
+  --task-type implementation --risk material \
+  --review-policy required --reviewer code-reviewer
+```
+
+`review_policy=none` is a valid explicit opt-out before work starts and is also the migration default for existing tasks/boards. Once a required task is running/in review or has implementer/verdict provenance, the policy and reviewer identity cannot be cleared; there is no combined downgrade-and-complete override. For `required`, `kanban_request_review` records the actual implementation run profile as `implementer_profile`, validates that the named reviewer profile exists and differs, then routes the same card to review. The named profile must claim that review. Acceptance requires `kanban_complete(review_verdict="approve")` with the claimed review's `expected_run_id`; the worker tool supplies that run id from its task environment. `kanban_request_changes` records a non-accepting verdict and restores implementation ownership; `kanban_block` from review records escalation and remains non-accepting. Model/provider overrides and caller-supplied reviewer fields are corroborating evidence only: the claimed run's `task_runs.profile` is the reviewer identity.
+
+Auto-decomposition emits structured task type/risk/policy fields. Material implementation uses `code-reviewer`, security risk uses `security-reviewer`, architecture risk uses `architecture-reviewer`, and general review uses `reviewer`, preferring an installed independent role. Manual decomposition can override required children with `hermes kanban decompose <id> --reviewer <profile>`.
+
+The dashboard REST API uses the same fields. `POST /api/plugins/kanban/tasks` accepts `task_type`, `risk_level`, `review_policy`, and `reviewer_profile`; task responses expose those plus `implementer_profile`, `review_verdict`, `reviewed_by`, and `reviewed_at`. A parked or dashboard-manual `PATCH {"status":"done","review_verdict":"approve","reviewer_profile":"code-reviewer"}` cannot accept a required review: approval must come from the claimed reviewer worker run. Attempts to clear a locked review contract or manually approve it return HTTP 409 without changing the task; invalid policy values return 400.
 
 ### Recommended handoff evidence
 
@@ -750,6 +767,7 @@ hermes kanban comment <id> "<text>" [--author NAME]
 
 # Bulk verbs — accept multiple ids:
 hermes kanban complete <id>... [--result "..."]
+        [--review-verdict approve] [--reviewer PROFILE]
 hermes kanban block <id> "<reason>" [--ids <id>...]
 hermes kanban unblock <id>...
 hermes kanban archive <id>...
@@ -779,6 +797,8 @@ hermes kanban notify-unsubscribe <id>
 hermes kanban context <id>                             # what a worker sees
 hermes kanban specify [<id> | --all] [--tenant T]      # flesh out a triage-column idea
         [--author NAME] [--json]                       #   into a full spec and promote to todo
+hermes kanban decompose [<id> | --all] [--tenant T] [--reviewer PROFILE]
+        [--author NAME] [--json]
 hermes kanban gc [--event-retention-days N]            # workspaces + old events + old logs
         [--log-retention-days N]
 ```

@@ -16,7 +16,7 @@ Review Kanban handoffs and route verified outcomes.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/devops\sdlc-review` |
-| Version | `1.1.0` |
+| Version | `1.2.0` |
 | Author | Jakub Wolniewicz (@frizikk) + Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -127,11 +127,12 @@ Approve only when the acceptance criteria are satisfied and the evidence is suff
 ```text
 kanban_complete(
     summary="Reviewed and approved. <what was verified>",
-    metadata={"review_outcome": "approved", "reviewer_checks": [...]}
+    metadata={"reviewer_checks": [...]},
+    review_verdict="approve"
 )
 ```
 
-Include the exact checks that passed and any bounded caveat that does not block acceptance.
+Include the exact checks that passed and any bounded caveat that does not block acceptance. The explicit `review_verdict` is the structural acceptance signal; metadata is evidence, not authority. The kernel verifies the claimed review's expected run id and authoritative persisted `task_runs.profile`; that profile must be the named reviewer, exist, and differ from the persisted implementer profile. A caller-supplied profile, or a different model/provider fallback under the implementer's profile, cannot satisfy the gate.
 
 #### Request changes
 
@@ -165,6 +166,7 @@ kanban_block(
 ```
 
 Explain the blocked decision and the smallest information needed to continue.
+Escalation records a non-accepting verdict. It never marks a review-required task complete.
 
 ### 4. Preserve role separation
 

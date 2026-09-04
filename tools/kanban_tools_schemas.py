@@ -74,7 +74,7 @@ KANBAN_LIST_SCHEMA = _schema(
             "type": "string",
             "enum": [
                 "triage", "todo", "ready", "running",
-                "blocked", "done", "archived",
+                "blocked", "review", "done", "archived",
             ],
             "description": "Optional task status filter.",
         },
@@ -158,6 +158,17 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "workspace are copied to durable task attachments before "
                 "cleanup; a missing declared scratch artifact keeps the "
                 "task in-flight so you can fix the path and retry."
+            ),
+        },
+        "review_verdict": {
+            "type": "string",
+            "enum": ["approve"],
+            "description": (
+                "Explicit accepting verdict for a task whose review_policy is "
+                "'required'. Only the independently named reviewer profile may "
+                "submit it from its claimed review run; the tool supplies that "
+                "run's expected id. Omit for no-review implementation "
+                "tasks; escalation and requested changes are non-accepting."
             ),
         },
     },
@@ -477,6 +488,32 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "provider — a model name alone is resolved against "
                 "the profile's provider and will fail if it belongs "
                 "to a different one. Requires 'model'."
+        )),
+        "task_type": {
+            "type": "string",
+            "enum": [
+                "implementation", "architecture", "security", "research",
+                "documentation", "operations", "other",
+            ],
+            "description": "Explicit task classification used by structural review policy.",
+        },
+        "risk_level": {
+            "type": "string",
+            "enum": ["low", "material", "security", "architecture"],
+            "description": "Explicit risk classification used to select the reviewer role.",
+        },
+        "review_policy": {
+            "type": "string",
+            "enum": ["none", "required"],
+            "description": (
+                "Structural completion policy. 'none' explicitly permits ordinary "
+                "completion; 'required' needs an approve verdict from a different "
+                "eligible reviewer profile."
+            ),
+        },
+        "reviewer": _prop("string", (
+            "Named reviewer profile for review_policy='required'. It must exist "
+            "and differ from the implementation assignee."
         )),
     },
     ["title", "assignee"],

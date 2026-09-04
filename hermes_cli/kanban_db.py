@@ -27,6 +27,18 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+from hermes_cli.kanban_review import (
+    APPROVE_INPUT,
+    ReviewGateError,
+    active_review_run_remediation,
+    missing_verdict_remediation,
+    non_accepting_verdict_remediation,
+    normalize_review_policy,
+    normalize_risk_level,
+    normalize_task_type,
+    validate_review_contract_change,
+    validate_required_reviewer,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -714,6 +726,14 @@ class Task:
     # VALID_BLOCK_KINDS or None (legacy); kept across unblock so a same-kind re-block reads as a loop.
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
+    task_type: str = "other"
+    risk_level: str = "low"
+    review_policy: str = "none"
+    reviewer_profile: Optional[str] = None
+    implementer_profile: Optional[str] = None
+    review_verdict: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -731,6 +751,9 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            task_type=str(g("task_type") or "other"),
+            risk_level=str(g("risk_level") or "low"),
+            review_policy=str(g("review_policy") or "none"),
         )
 
 
@@ -744,10 +767,12 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id",
+    "reviewed_at",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
     "model_override", "provider_override", "reasoning_effort", "goal_max_turns", "block_kind",
+    "reviewer_profile", "implementer_profile", "review_verdict", "reviewed_by",
 )
 
 
@@ -940,7 +965,18 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit review contract. Existing/migrated tasks default to 'none' so
+    -- old boards and workers retain their completion behavior. 'required'
+    -- activates the independent-profile approval gate.
+    task_type            TEXT NOT NULL DEFAULT 'other',
+    risk_level           TEXT NOT NULL DEFAULT 'low',
+    review_policy        TEXT NOT NULL DEFAULT 'none',
+    reviewer_profile     TEXT,
+    implementer_profile  TEXT,
+    review_verdict       TEXT,
+    reviewed_by          TEXT,
+    reviewed_at          INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1228,6 +1264,8 @@ def create_task(
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    task_type: str = "other", risk_level: str = "low", review_policy: str = "none",
+    reviewer_profile: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1243,6 +1281,10 @@ def create_task(
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
+    task_type = normalize_task_type(task_type)
+    risk_level = normalize_risk_level(risk_level)
+    review_policy = normalize_review_policy(review_policy)
+    reviewer_profile = _canonical_assignee(reviewer_profile)
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -1316,8 +1358,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id,
+                        task_type, risk_level, review_policy, reviewer_profile
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1327,6 +1370,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id,
+                        task_type, risk_level, review_policy, reviewer_profile,
                     ),
                 )
                 for pid in parents:
@@ -1348,6 +1392,10 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "task_type": task_type,
+                        "risk_level": risk_level,
+                        "review_policy": review_policy,
+                        "reviewer_profile": reviewer_profile,
                     },
                 )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
@@ -1575,6 +1623,79 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
         "reasoning_effort_set", {"reasoning_effort": effort},
         ("reasoning_effort",), archived_msg="cannot set reasoning effort",
     )
+
+
+def set_review_policy(
+    conn: sqlite3.Connection, task_id: str, *, review_policy: str,
+    reviewer_profile: Optional[str] = None, task_type: Optional[str] = None,
+    risk_level: Optional[str] = None,
+) -> bool:
+    """Set the explicit review contract before acceptance.
+
+    ``review_policy='none'`` is a deliberate, supported no-review decision only
+    before work/review provenance locks the contract. Required policies may be
+    created without a reviewer, but request/accept transitions then fail closed
+    with remediation.
+    """
+    policy = normalize_review_policy(review_policy)
+    reviewer = _canonical_assignee(reviewer_profile)
+    normalized_type = normalize_task_type(task_type) if task_type is not None else None
+    normalized_risk = normalize_risk_level(risk_level) if risk_level is not None else None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, review_policy, reviewer_profile, implementer_profile, "
+            "review_verdict, reviewed_by, reviewed_at FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if row["status"] in {"done", "archived"}:
+            raise RuntimeError(f"cannot change review policy on terminal task {task_id}")
+        current_policy = str(row["review_policy"] or "none")
+        current_reviewer = _canonical_assignee(_nonblank_str(row["reviewer_profile"]))
+        target_reviewer = reviewer if policy == "required" else None
+        contract_changed = validate_review_contract_change(
+            status=row["status"],
+            current_policy=current_policy,
+            current_reviewer=current_reviewer,
+            target_policy=policy,
+            target_reviewer=target_reviewer,
+            has_implementer=_nonblank_str(row["implementer_profile"]) is not None,
+            review_verdict=_nonblank_str(row["review_verdict"]),
+            has_review_provenance=any(
+                row[field] is not None
+                for field in ("implementer_profile", "review_verdict", "reviewed_by", "reviewed_at")
+            ),
+        )
+
+        sets = ["review_policy = ?", "reviewer_profile = ?"]
+        values: list[Any] = [policy, target_reviewer]
+        if contract_changed:
+            sets.extend([
+                "implementer_profile = NULL", "review_verdict = NULL",
+                "reviewed_by = NULL", "reviewed_at = NULL",
+            ])
+        if normalized_type is not None:
+            sets.append("task_type = ?")
+            values.append(normalized_type)
+        if normalized_risk is not None:
+            sets.append("risk_level = ?")
+            values.append(normalized_risk)
+        conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", (*values, task_id))
+        _append_event(
+            conn, task_id, "review_policy_set",
+            {
+                "review_policy": policy,
+                "reviewer_profile": target_reviewer,
+                "task_type": normalized_type,
+                "risk_level": normalized_risk,
+            },
+        )
+    notify_task_updated(
+        conn, task_id,
+        ("review_policy", "reviewer_profile", "implementer_profile", "review_verdict", "reviewed_by", "reviewed_at"),
+    )
+    return True
 
 
 # --- Links ---
@@ -2533,16 +2654,91 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+def _reviewer_profile_exists(profile: str) -> bool:
+    """Eligibility boundary: a reviewer is a live Hermes profile, not model metadata."""
+    from hermes_cli.profiles import profile_exists
+
+    return profile_exists(profile)
+
+
+def _active_run_profile(conn: sqlite3.Connection, run_id: Optional[int]) -> Optional[str]:
+    if run_id is None:
+        return None
+    row = conn.execute("SELECT profile FROM task_runs WHERE id = ?", (int(run_id),)).fetchone()
+    return _canonical_assignee(_nonblank_str(row["profile"]) if row else None)
+
+
+def _review_approval_actor(
+    conn: sqlite3.Connection, task_id: str, *, review_verdict: Optional[str],
+    reviewer_profile: Optional[str], expected_run_id: Optional[int],
+) -> Optional[str]:
+    """Return the independently eligible approving profile, or raise.
+
+    The active ``task_runs.profile`` is authoritative for an autonomous review.
+    Caller-supplied/model/fallback metadata can only agree with it, never replace
+    it. ``None`` means the task has no required-review policy.
+    """
+    row = conn.execute(
+        "SELECT status, current_run_id, review_policy, reviewer_profile, "
+        "implementer_profile, review_verdict FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None or (row["review_policy"] or "none") != "required":
+        return None
+    selected = _canonical_assignee(_nonblank_str(row["reviewer_profile"]))
+    implementer = _canonical_assignee(_nonblank_str(row["implementer_profile"]))
+    validate_required_reviewer(
+        reviewer=selected, implementer=implementer, profile_exists=_reviewer_profile_exists,
+    )
+    if review_verdict != APPROVE_INPUT:
+        raise ReviewGateError(missing_verdict_remediation(selected))
+
+    current_run_id = _opt_int(row["current_run_id"])
+    expected = _opt_int(expected_run_id)
+    if row["status"] != "running":
+        if row["status"] == "review":
+            raise ReviewGateError(active_review_run_remediation(selected))
+        raise ReviewGateError(non_accepting_verdict_remediation(row["review_verdict"], selected))
+    if _retry_status_for_run(conn, task_id, current_run_id) != "review":
+        raise ReviewGateError(non_accepting_verdict_remediation(row["review_verdict"], selected))
+    if current_run_id is None or expected is None or expected != current_run_id:
+        raise ReviewGateError(active_review_run_remediation(selected))
+
+    actor = _active_run_profile(conn, current_run_id)
+    supplied = _canonical_assignee(reviewer_profile)
+    if supplied is not None and actor != supplied:
+        raise ReviewGateError(
+            f"review required: active review run belongs to profile {actor!r}, not "
+            f"caller-supplied reviewer {supplied!r}; rerun the review as {selected!r}"
+        )
+
+    if actor is None:
+        raise ReviewGateError(
+            "review required: claimed review run has no authoritative task_runs.profile; "
+            f"return the task to review and reclaim it as {selected!r}"
+        )
+    if actor != selected:
+        raise ReviewGateError(
+            f"review required: approval came from profile {actor!r}, but the named reviewer is "
+            f"{selected!r}; claim the review as {selected!r} and retry with review_verdict='approve'"
+        )
+    validate_required_reviewer(
+        reviewer=actor, implementer=implementer, profile_exists=_reviewer_profile_exists,
+    )
+    return actor
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True,
+    fire_lifecycle_hook: bool = True, review_verdict: Optional[str] = None,
+    reviewer_profile: Optional[str] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
-    ``ready`` is accepted for manual CLI completion, ``review`` for human
-    approval; with no active run the handoff fields survive via
+    ``ready`` is accepted for manual CLI completion, and ``review`` for legacy
+    no-policy human approval; required approval must own an active claimed
+    review run. With no active run, ordinary handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
     ``created_cards`` are verified first — a phantom id raises
@@ -2553,6 +2749,11 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    # Denied review approvals must not stage artifacts or emit advisory events.
+    _review_approval_actor(
+        conn, task_id, review_verdict=review_verdict,
+        reviewer_profile=reviewer_profile, expected_run_id=expected_run_id,
+    )
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
@@ -2564,6 +2765,11 @@ def complete_task(
         if not _parents_satisfied(conn, task_id):
             return False
         prior_status = _task_status(conn, task_id)
+        approval_actor = _review_approval_actor(
+            conn, task_id, review_verdict=review_verdict,
+            reviewer_profile=reviewer_profile, expected_run_id=expected_run_id,
+        )
+        approval_run_id = _current_run_id(conn, task_id) if approval_actor else None
         sql = """
                 UPDATE tasks
                    SET status       = 'done',
@@ -2583,6 +2789,24 @@ def complete_task(
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
             return False
+        if approval_actor:
+            review_row = conn.execute(
+                "SELECT implementer_profile FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            conn.execute(
+                "UPDATE tasks SET review_verdict = 'approved', reviewed_by = ?, reviewed_at = ? "
+                "WHERE id = ?",
+                (approval_actor, now, task_id),
+            )
+            _append_event(
+                conn, task_id, "review_approved",
+                {
+                    "implementer": review_row["implementer_profile"],
+                    "reviewer": approval_actor,
+                    "verdict": "approved",
+                },
+                run_id=approval_run_id,
+            )
         if isinstance(metadata, dict):
             _stage_completion_artifacts(conn, task_id, metadata, now)
         run_id = _end_run(
@@ -2915,7 +3139,8 @@ def block_task(
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, block_kind, block_recurrences, current_run_id, review_policy "
+            "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if cur_row is None:
             return False
@@ -2940,6 +3165,13 @@ def block_task(
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
             return False
+        if source_status == "review" and (cur_row["review_policy"] or "none") == "required":
+            reviewer = _active_run_profile(conn, _opt_int(cur_row["current_run_id"]))
+            conn.execute(
+                "UPDATE tasks SET review_verdict = 'escalated', reviewed_by = ?, reviewed_at = ? "
+                "WHERE id = ?",
+                (reviewer, int(time.time()), task_id),
+            )
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
@@ -3018,8 +3250,8 @@ def request_review(
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
         trow = conn.execute(
-            "SELECT assignee, status, claim_lock, current_run_id "
-            "FROM tasks WHERE id = ?", (task_id,),
+            "SELECT assignee, status, claim_lock, current_run_id, review_policy, "
+            "reviewer_profile FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if trow is None:
             return _ret(False, "task not found")
@@ -3036,34 +3268,54 @@ def request_review(
                 "(worker ownership) or force=True (explicit operator "
                 "override) instead of clearing the live run's claim",
             )
-        implementer = trow["assignee"]
-        if reviewer is None:
-            reviewer = _prior_reviewer(conn, task_id)
-            if reviewer is False:
-                return _ret(
-                    False, "re-review has no durable reviewer provenance (the "
-                    "latest changes_requested event is missing or "
-                    "malformed); pass reviewer= explicitly",
-                )
-        reviewer = _canonical_assignee(reviewer)
-        assignee_sql = ", assignee = ?" if reviewer is not None else ""
-        run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
-        params: tuple[Any, ...] = (
-            *(() if reviewer is None else (reviewer,)), task_id,
-            *(() if expected_run_id is None else (int(expected_run_id),)),
+        implementer = (
+            _active_run_profile(conn, _opt_int(trow["current_run_id"]))
+            if trow["status"] == "running" else _canonical_assignee(trow["assignee"])
         )
+        required = (trow["review_policy"] or "none") == "required"
+        if reviewer is None:
+            if required:
+                reviewer = _nonblank_str(trow["reviewer_profile"])
+            else:
+                prior_reviewer = _prior_reviewer(conn, task_id)
+                if prior_reviewer is False:
+                    return _ret(
+                        False, "re-review has no durable reviewer provenance (the "
+                        "latest changes_requested event is missing or "
+                        "malformed); pass reviewer= explicitly",
+                    )
+                reviewer = prior_reviewer
+        reviewer = _canonical_assignee(reviewer)
+        if required:
+            try:
+                reviewer = validate_required_reviewer(
+                    reviewer=reviewer, implementer=implementer,
+                    profile_exists=_reviewer_profile_exists,
+                )
+            except ReviewGateError as exc:
+                return _ret(False, str(exc))
+
+        sets = [
+            "status = 'review'", "claim_lock = NULL", "claim_expires = NULL", "worker_pid = NULL",
+        ]
+        values: list[Any] = []
+        if reviewer is not None:
+            sets.append("assignee = ?")
+            values.append(reviewer)
+        if required:
+            sets.extend([
+                "implementer_profile = ?", "reviewer_profile = ?", "review_verdict = 'pending'",
+                "reviewed_by = NULL", "reviewed_at = NULL",
+            ])
+            values.extend([implementer, reviewer])
+        values.append(task_id)
+        run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
+        if expected_run_id is not None:
+            values.append(int(expected_run_id))
         cur = conn.execute(
-            """
-            UPDATE tasks
-               SET status        = 'review',
-                   claim_lock    = NULL,
-                   claim_expires = NULL,
-                   worker_pid    = NULL
-            """ + assignee_sql + """
-             WHERE id = ?
-               AND status IN ('running', 'ready')
-            """ + run_guard,
-            params,
+            f"UPDATE tasks SET {', '.join(sets)} "
+            "WHERE id = ? AND status IN ('running', 'ready')" + run_guard,
+            tuple(values),
         )
         if cur.rowcount != 1:
             return _ret(
@@ -3119,7 +3371,8 @@ def request_changes(
 
     with write_txn(conn):
         task_row = conn.execute(
-            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, assignee, current_run_id, review_policy, reviewer_profile, "
+            "implementer_profile FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if task_row is None:
             return False, "task not found"
@@ -3134,13 +3387,24 @@ def request_changes(
         if claimed_payload.get("source_status") != "review":
             return False, "active run was not claimed from review"
 
+        required = (task_row["review_policy"] or "none") == "required"
         requested_event = _latest_event(conn, task_id, "review_requested")
         if requested_event is None:
             return False, "no prior review_requested event"
-        implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
+        implementer = (
+            _nonblank_str(task_row["implementer_profile"])
+            if required else _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
+        )
         if implementer is None:
             return False, "review handoff has no valid implementer provenance"
-        reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
+        reviewer = _active_run_profile(conn, _opt_int(current_run_id))
+        if required:
+            selected = _canonical_assignee(_nonblank_str(task_row["reviewer_profile"]))
+            if reviewer != selected or reviewer == _canonical_assignee(implementer):
+                return False, (
+                    f"active reviewer profile {reviewer!r} is not the independent named reviewer "
+                    f"{selected!r}; reclaim and rerun review as {selected!r}"
+                )
 
         new_status = _landing_status_after_parents(conn, task_id)
         # consecutive_failures deliberately PRESERVED: a review transition is
@@ -3152,10 +3416,13 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL
+                   worker_pid = NULL,
+                   review_verdict = CASE WHEN review_policy = 'required' THEN 'changes_requested' ELSE review_verdict END,
+                   reviewed_by = CASE WHEN review_policy = 'required' THEN ? ELSE reviewed_by END,
+                   reviewed_at = CASE WHEN review_policy = 'required' THEN ? ELSE reviewed_at END
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
-            (new_status, implementer, task_id, int(current_run_id)),
+            (new_status, implementer, reviewer, int(time.time()), task_id, int(current_run_id)),
         )
         if cur.rowcount != 1:
             return False, "task changed during review handoff"
@@ -3310,15 +3577,28 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
             note="invariant recovery on review reopen",
         )
         new_status = _landing_status_after_parents(conn, task_id)
+        task_row = conn.execute(
+            "SELECT assignee, review_policy, implementer_profile FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
         review_event = _latest_event(conn, task_id, "review_requested")
         handoff = _json_dict(_row_get(review_event, "payload"))
-        implementer = _nonblank_str(handoff.get("implementer"))
-        params: tuple[Any, ...] = (new_status, *((implementer,) if implementer else ()), task_id)
+        required = bool(task_row and (task_row["review_policy"] or "none") == "required")
+        implementer = (
+            _nonblank_str(task_row["implementer_profile"])
+            if required else _nonblank_str(handoff.get("implementer"))
+        )
+        reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]) if task_row else None)
+        params: tuple[Any, ...] = (
+            new_status, reviewer, now, *((implementer,) if implementer else ()), task_id,
+        )
         cur = conn.execute(
             # consecutive_failures deliberately PRESERVED: review reopen is not
             # a success signal; only complete_task resets the breaker (#35072).
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "review_verdict = CASE WHEN review_policy = 'required' THEN 'changes_requested' ELSE review_verdict END, "
+            "reviewed_by = CASE WHEN review_policy = 'required' THEN ? ELSE reviewed_by END, "
+            "reviewed_at = CASE WHEN review_policy = 'required' THEN ? ELSE reviewed_at END "
             + (", assignee = ?" if implementer else "")
             + " WHERE id = ? AND status = 'review'",
             params,
@@ -3394,7 +3674,12 @@ def invalidate_descendants_for_parent_reopen(
             conn.execute(
                 "UPDATE tasks SET status = 'todo', completed_at = NULL, "
                 "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
-                "current_run_id = NULL, consecutive_failures = 0 WHERE id = ?", (row["id"],),
+                "current_run_id = NULL, consecutive_failures = 0, "
+                "implementer_profile = CASE WHEN review_policy = 'required' THEN NULL ELSE implementer_profile END, "
+                "review_verdict = CASE WHEN review_policy = 'required' THEN NULL ELSE review_verdict END, "
+                "reviewed_by = CASE WHEN review_policy = 'required' THEN NULL ELSE reviewed_by END, "
+                "reviewed_at = CASE WHEN review_policy = 'required' THEN NULL ELSE reviewed_at END "
+                "WHERE id = ?", (row["id"],),
             )
             entry = {
                 "id": row["id"], "prior_status": previous_status,
@@ -3432,6 +3717,8 @@ def invalidate_descendants_for_parent_reopen(
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
+    task_type: Optional[str] = None, risk_level: Optional[str] = None,
+    review_policy: Optional[str] = None, reviewer_profile: Optional[str] = None,
 ) -> bool:
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
@@ -3440,6 +3727,10 @@ def specify_triage_task(
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
+    normalized_type = normalize_task_type(task_type) if task_type is not None else None
+    normalized_risk = normalize_risk_level(risk_level) if risk_level is not None else None
+    normalized_policy = normalize_review_policy(review_policy) if review_policy is not None else None
+    reviewer_profile = _canonical_assignee(reviewer_profile)
     with write_txn(conn):
         existing = conn.execute(
             "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
@@ -3462,6 +3753,14 @@ def specify_triage_task(
             sets.append("assignee = ?")
             params.append(assignee)
             changed_fields.append("assignee")
+        for field_name, value in (
+            ("task_type", normalized_type), ("risk_level", normalized_risk),
+            ("review_policy", normalized_policy), ("reviewer_profile", reviewer_profile),
+        ):
+            if value is not None:
+                sets.append(f"{field_name} = ?")
+                params.append(value)
+                changed_fields.append(field_name)
         params.append(task_id)
         cur = conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "
@@ -3615,19 +3914,30 @@ def _insert_decomposed_child(
         child_ws_path = None
     new_id = _new_task_id()
     body = child.get("body")
+    task_type = normalize_task_type(child.get("task_type"))
+    risk_level = normalize_risk_level(child.get("risk_level", child.get("risk")))
+    review_policy = normalize_review_policy(child.get("review_policy"))
+    reviewer_profile = _canonical_assignee(child.get("reviewer_profile", child.get("reviewer")))
     conn.execute(
         "INSERT INTO tasks "
         "(id, title, body, assignee, status, workspace_kind, "
-        " workspace_path, tenant, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        " workspace_path, tenant, created_at, created_by, task_type, risk_level, "
+        " review_policy, reviewer_profile) "
+        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             new_id, child["title"].strip(), body if isinstance(body, str) else None,
             _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
-            root_row["tenant"], now, (author or "decomposer"),
+            root_row["tenant"], now, (author or "decomposer"), task_type, risk_level,
+            review_policy, reviewer_profile,
         ),
     )
     _append_event(
-        conn, new_id, "created", {"by": author or "decomposer", "from_decompose_of": root_id},
+        conn, new_id, "created",
+        {
+            "by": author or "decomposer", "from_decompose_of": root_id,
+            "task_type": task_type, "risk_level": risk_level,
+            "review_policy": review_policy, "reviewer_profile": reviewer_profile,
+        },
     )
     _inherit_notify_subs(conn, new_id, (root_id,), created_at=now)
     return new_id
@@ -3777,6 +4087,22 @@ def _ctx_header(lines: list[str], task: Task) -> None:
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
     lines.append(f"Status:   {task.status}")
+    lines.append(f"Task type/risk: {task.task_type}/{task.risk_level}")
+    if task.review_policy == "required":
+        lines.append(
+            f"Review policy: required — reviewer {task.reviewer_profile or '(missing; must be named before handoff)'}"
+        )
+        lines.append(
+            "Review gate: implementation must use kanban_request_review; only the independent named "
+            "reviewer may accept with kanban_complete(review_verdict='approve')."
+        )
+    else:
+        lines.append("Review policy: none — ordinary kanban_complete remains valid")
+    if task.review_verdict:
+        lines.append(
+            f"Review verdict: {task.review_verdict}"
+            + (f" by {task.reviewed_by}" if task.reviewed_by else "")
+        )
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")

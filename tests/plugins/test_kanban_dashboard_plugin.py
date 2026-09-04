@@ -117,6 +117,81 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_api_represents_and_enforces_required_independent_review(client, kanban_home):
+    for name in ("builder", "code-reviewer"):
+        (kanban_home / "profiles" / name).mkdir(parents=True, exist_ok=True)
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "Material API change",
+            "assignee": "builder",
+            "task_type": "implementation",
+            "risk_level": "material",
+            "review_policy": "required",
+            "reviewer_profile": "code-reviewer",
+        },
+    )
+    assert created.status_code == 200, created.text
+    task = created.json()["task"]
+    assert task["review_policy"] == "required"
+    assert task["reviewer_profile"] == "code-reviewer"
+
+    with kbc.connect() as conn:
+        implementation = kb.claim_task(conn, task["id"])
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            task["id"],
+            summary="ready",
+            expected_run_id=implementation.current_run_id,
+        )
+
+    downgrade = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"review_policy": "none", "status": "done"},
+    )
+    assert downgrade.status_code == 409
+    assert "review contract is locked" in downgrade.json()["detail"]
+    with kbc.connect() as conn:
+        parked = kb.get_task(conn, task["id"])
+        assert parked is not None
+        assert (parked.status, parked.review_policy, parked.reviewer_profile) == (
+            "review",
+            "required",
+            "code-reviewer",
+        )
+        review = kb.claim_review_task(conn, task["id"])
+        assert review is not None
+
+    denied = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "done", "summary": "looks good"},
+    )
+    assert denied.status_code == 409
+    assert "review_verdict='approve'" in denied.json()["detail"]
+
+    manual_approval = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": "done",
+            "summary": "caller-supplied manual approval",
+            "review_verdict": "approve",
+            "reviewer_profile": "code-reviewer",
+        },
+    )
+    assert manual_approval.status_code == 409
+    assert "claimed review run" in manual_approval.json()["detail"]
+    assert "expected_run_id" in manual_approval.json()["detail"]
+    with kbc.connect() as conn:
+        unchanged = kb.get_task(conn, task["id"])
+        assert unchanged is not None
+        assert unchanged.status == "running"
+        assert unchanged.current_run_id == review.current_run_id
+        assert unchanged.review_verdict == "pending"
+        assert unchanged.reviewed_by is None
+        assert unchanged.reviewed_at is None
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

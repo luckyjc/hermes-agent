@@ -802,6 +802,16 @@ _LATER_TASK_COLUMNS = (
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
+    # Explicit independent-review policy. Defaults preserve every legacy task's
+    # pre-gate completion semantics; only review_policy='required' is gated.
+    ("task_type", "task_type TEXT NOT NULL DEFAULT 'other'"),
+    ("risk_level", "risk_level TEXT NOT NULL DEFAULT 'low'"),
+    ("review_policy", "review_policy TEXT NOT NULL DEFAULT 'none'"),
+    ("reviewer_profile", "reviewer_profile TEXT"),
+    ("implementer_profile", "implementer_profile TEXT"),
+    ("review_verdict", "review_verdict TEXT"),
+    ("reviewed_by", "reviewed_by TEXT"),
+    ("reviewed_at", "reviewed_at INTEGER"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

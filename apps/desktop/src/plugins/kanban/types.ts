@@ -23,6 +23,14 @@ export interface KanbanTask {
   started_at?: null | number
   worker_pid?: null | number
   last_heartbeat_at?: null | number
+  task_type?: 'architecture' | 'documentation' | 'implementation' | 'operations' | 'other' | 'research' | 'security'
+  risk_level?: 'architecture' | 'low' | 'material' | 'security'
+  review_policy?: 'none' | 'required'
+  reviewer_profile?: null | string
+  implementer_profile?: null | string
+  review_verdict?: 'approved' | 'changes_requested' | 'escalated' | 'pending' | null
+  reviewed_by?: null | string
+  reviewed_at?: null | number
 }
 
 export interface KanbanColumn {

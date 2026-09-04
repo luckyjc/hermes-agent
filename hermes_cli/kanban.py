@@ -369,6 +369,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            task_type=getattr(args, "task_type", "other"),
+            risk_level=getattr(args, "risk_level", "low"),
+            review_policy=getattr(args, "review_policy", "none"),
+            reviewer_profile=getattr(args, "reviewer_profile", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -498,6 +502,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"Task {task.id}: {task.title}")
     field("status", task.status)
     field("assignee", task.assignee or "-")
+    field("review", task.review_policy)
+    if task.reviewer_profile:
+        field("reviewer", task.reviewer_profile)
+    if task.review_verdict:
+        field("verdict", task.review_verdict + (f" by {task.reviewed_by}" if task.reviewed_by else ""))
+    if task.task_type != "other" or task.risk_level != "low":
+        field("task/risk", f"{task.task_type}/{task.risk_level}")
     if task.tenant:
         field("tenant", task.tenant)
     field("workspace", f"{task.workspace_kind}" + (f" @ {task.workspace_path}" if task.workspace_path else ""))
@@ -869,8 +880,16 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+            try:
+                return kb.complete_task(
+                    conn, tid, result=args.result, summary=summary, metadata=metadata,
+                    expected_run_id=_worker_run_id_for(tid),
+                    review_verdict=getattr(args, "review_verdict", None),
+                    reviewer_profile=getattr(args, "reviewer_profile", None),
+                )
+            except kb.ReviewGateError as exc:
+                fail_msg[tid] = str(exc)
+                return False
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 
@@ -1212,7 +1231,10 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
     """Fan a triage task (or all) out into child tasks via the auxiliary LLM."""
     from hermes_cli import kanban_decompose as decomp
 
-    return _run_triage_sweep(args, "decompose", decomp, decomp.decompose_task, "decomposed",
+    run_one = lambda tid, author: decomp.decompose_task(  # noqa: E731 - adapts the shared sweep callback
+        tid, author=author, reviewer=getattr(args, "reviewer", None),
+    )
+    return _run_triage_sweep(args, "decompose", decomp, run_one, "decomposed",
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
 

@@ -50,7 +50,7 @@ For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spa
 
 Every claim must end in exactly one of:
 
-- `kanban_complete(summary=..., metadata=...)` — task succeeds, status flips to `done`.
+- `kanban_complete(summary=..., metadata=...)` — a `review_policy=none` task succeeds and flips to `done`; a required review additionally needs `review_verdict="approve"` from its named reviewer run.
 - `kanban_request_review(summary=..., metadata=..., reviewer=...)` — same-card implementation is complete and enters first-class review; status flips to `review`. The dispatcher loads the bundled `sdlc-review` skill unless `kanban.review_dispatch` is disabled. A reviewer approves with `kanban_complete`, returns actionable rework with `kanban_request_changes`, or escalates a genuine external blocker with `kanban_block`.
 - `kanban_block(reason=...)` — task waits for human input, status flips to `blocked`. The dispatcher respawns when `kanban_unblock` runs.
 - The worker process exits without a tool call. The kernel reaps it and emits `crashed` (PID died) or `gave_up` (consecutive-failure breaker tripped) or `timed_out` (max_runtime exceeded). This is the failure path; healthy workers don't end here.
@@ -61,11 +61,11 @@ The kanban kernel enforces that exactly one of these terminates each run. A work
 
 For code-changing tasks, pick the review model encoded by the task graph:
 
-- **Same-card review:** call `kanban_request_review(summary=..., metadata=..., reviewer=...)`. The task enters `review` without touching block recurrence accounting. The dispatcher claims it with the bundled `sdlc-review` skill by default. The reviewer approves with `kanban_complete`, calls `kanban_request_changes(reason=...)` to close the review run and route the task back to its original implementer, or blocks only for a genuine external escalation.
+- **Same-card review:** set `review_policy="required"` and a named `reviewer_profile` on the task, then call `kanban_request_review(summary=..., metadata=..., reviewer=...)`. The task persists implementer/reviewer profile identity and enters `review` without touching block recurrence accounting. The dispatcher claims it with the bundled `sdlc-review` skill by default. The named reviewer approves with `kanban_complete(review_verdict="approve")`, calls `kanban_request_changes(reason=...)` to close the review run and route the task back to its original implementer, or blocks only for a genuine external escalation. Missing reviewers, missing verdicts, nonexistent reviewer profiles, and self-review fail closed with a command-level remediation. Model/provider fallback metadata never substitutes for profile identity.
 - **Pre-created downstream review/QA/release card:** `kanban_show` lists child IDs; inspect those cards with `kanban_show(task_id=...)` before choosing the terminal action. When a child is the downstream review/QA/release phase, call `kanban_complete` on the implementation phase. It cannot promote until this parent is `done`/`archived`. Do not additionally request same-card review and never sticky-block the parent with `review-required:` — either choice strands or duplicates the downstream lane.
-- **Human-only boards:** set `kanban.review_dispatch: false`. A task can then remain in `review` until a human approves it or uses `reopen-review`/the dashboard to return it to `ready`/`todo`.
+- **Human-only boards:** set `kanban.review_dispatch: false`. A no-policy task can remain in `review` until a human approves it; a required task still needs its named profile to claim the review run. A human can use `reopen-review`/the dashboard to return either shape to `ready`/`todo`.
 
-Both review models carry their structured handoff on the lifecycle transition itself. Do not place secrets, tokens, or raw PII in `summary` or `metadata`; run rows are durable.
+Tasks created before the review-policy migration are backfilled with `review_policy="none"`, so their existing completion behavior remains unchanged. An explicitly selected `none` policy is also valid before work starts, including for a material task when an operator has deliberately waived review. Once required work is running/in review or has implementer/verdict provenance, neither the requirement nor reviewer identity can be cleared. Both review models carry their structured handoff on the lifecycle transition itself. Do not place secrets, tokens, or raw PII in `summary` or `metadata`; run rows are durable.
 
 The injected `KANBAN_GUIDANCE` covers both graph shapes, `kanban_complete`, the same-card review loop, and `kanban_block` for genuine blockers.
 

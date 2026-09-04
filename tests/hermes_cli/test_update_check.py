@@ -24,16 +24,44 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
 
     cache_file = tmp_path / ".update_check"
     cache_file.write_text(
-        json.dumps({"ts": time.time(), "behind": 3, "ver": __version__}),
+        json.dumps({
+            "ts": time.time(), "behind": 3, "rev": None,
+            "ver": __version__, "checkout_rev": "local-head",
+        }),
         encoding="utf-8",
     )
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+    with patch("hermes_cli.banner._resolve_repo_dir", return_value=repo_dir), \
+         patch("hermes_cli.banner._git_stdout", return_value="local-head"), \
+         patch("hermes_cli.banner._check_via_local_git") as mock_check:
         result = check_for_updates()
 
     assert result == 3
-    mock_run.assert_not_called()
+    mock_check.assert_not_called()
+
+
+def test_check_for_updates_invalidates_cache_when_checkout_moves(tmp_path, monkeypatch):
+    """A merge/update outside ``hermes update`` must not preserve stale advice."""
+    from hermes_cli import __version__
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    (tmp_path / ".update_check").write_text(json.dumps({
+        "ts": time.time(), "behind": 453, "rev": None,
+        "ver": __version__, "checkout_rev": "old-head",
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner._resolve_repo_dir", return_value=repo_dir), \
+         patch("hermes_cli.banner._git_stdout", return_value="new-head"), \
+         patch("hermes_cli.banner._check_via_local_git", return_value=0) as mock_check:
+        assert check_for_updates() == 0
+    mock_check.assert_called_once_with(repo_dir)
+    cache = json.loads((tmp_path / ".update_check").read_text())
+    assert cache["behind"] == 0
+    assert cache["checkout_rev"] == "new-head"
 
 
 

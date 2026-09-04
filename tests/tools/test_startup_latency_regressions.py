@@ -192,6 +192,31 @@ class TestBannerUpdateCheckNonBlocking:
         assert printed, "deferred update notice never printed"
         assert "3 commits behind" in printed[0]
 
+    def test_deferred_notice_is_plain_text_for_interactive_stdout(self):
+        import hermes_cli.banner as banner
+
+        printed = []
+
+        class _Console:
+            def print(self, msg, *a, **kwargs):
+                printed.append((msg, kwargs))
+
+        done = threading.Event()
+        with patch.object(banner, "_update_check_done", done), \
+             patch.object(banner, "_update_result", 3), \
+             patch.object(banner, "_deferred_update_notice_started", False):
+            banner._defer_update_notice(_Console(), max_wait=2.0)  # type: ignore[arg-type]
+            done.set()
+            deadline = time.time() + 2
+            while not printed and time.time() < deadline:
+                time.sleep(0.02)
+
+        assert printed
+        message, kwargs = printed[0]
+        assert message == "⚠ 3 commits behind — run hermes update to update"
+        assert kwargs["markup"] is False
+        assert "[bold" not in message
+
     def test_deferred_notice_silent_when_up_to_date(self):
         import hermes_cli.banner as banner
 

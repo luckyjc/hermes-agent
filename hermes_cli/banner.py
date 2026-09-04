@@ -329,6 +329,10 @@ def check_for_updates() -> Optional[int]:
     """
     cache_file = get_hermes_home() / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir = None if embedded_rev else _resolve_repo_dir()
+    checkout_rev = embedded_rev or (
+        _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
+    )
     # Docker images have no working tree (the image excludes `.git`) and set no HERMES_REVISION.
     # None makes both the Rich banner and the Ink badge show nothing, mirroring the dashboard's
     # `/api/hermes/update/check` short-circuit so the surfaces agree.
@@ -342,19 +346,21 @@ def check_for_updates() -> Optional[int]:
     now = time.time()
     cached = _read_json(cache_file)
     if (cached is not None and now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION):
+            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION
+            and cached.get("checkout_rev") == checkout_rev):
         return cached.get("behind")
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
         # No checkout and no embedded revision — status can't be determined.
-        repo_dir = _resolve_repo_dir()
         behind = _check_via_local_git(repo_dir) if repo_dir is not None else None
     # Don't cache inconclusive results: None means the check could not run (typically a failed
     # fetch), and caching it would suppress retries for the full 6-hour window (#82166).
     if behind is not None:
-        _quiet(lambda: cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}), encoding="utf-8"))
+        _quiet(lambda: cache_file.write_text(json.dumps({
+            "ts": now, "behind": behind, "rev": embedded_rev,
+            "ver": VERSION, "checkout_rev": checkout_rev,
+        }), encoding="utf-8"))
     return behind
 
 
@@ -504,7 +510,11 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
 
     def _wait_and_print() -> None:
         if _update_check_done.wait(timeout=max_wait) and _update_result:
-            console.print(_format_update_notice(_update_result))
+            # This runs after prompt_toolkit owns stdout. Rich ANSI emitted by a
+            # background thread can render as literal escape fragments.
+            from rich.text import Text
+
+            console.print(Text.from_markup(_format_update_notice(_update_result)).plain, markup=False)
     _daemon("update-notice", _wait_and_print)  # never break the session over an update notice
 
 

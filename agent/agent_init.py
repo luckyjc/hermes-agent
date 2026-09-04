@@ -2286,6 +2286,16 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
+    # Snapshot the loaded profile's execution policy on the agent. Codex sessions are
+    # created lazily, possibly after profile scopes have changed in a multiplexed process,
+    # so they must not derive authority from ambient process environment at spawn time.
+    _terminal_cfg = _agent_cfg.get("terminal") if isinstance(_agent_cfg, dict) else None
+    _terminal_security_mode = (
+        _terminal_cfg.get("security_mode", "auto")
+        if isinstance(_terminal_cfg, dict) else "auto"
+    )
+    agent.terminal_security_mode = str(_terminal_security_mode or "auto").strip().lower()
+
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform)
     _apply_agent_section(agent, _agent_cfg)

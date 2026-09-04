@@ -378,6 +378,39 @@ class TestRunConversationCodexPath:
 
         assert captured["cwd"] == str(tmp_path)
 
+    def test_profile_terminal_security_mode_reaches_codex_session(self, monkeypatch, tmp_path):
+        """The loaded profile config, not an ambient process variable, owns Codex sandbox policy."""
+        profile_home = tmp_path / "reviewer-profile"
+        profile_home.mkdir()
+        (profile_home / "config.yaml").write_text(
+            "terminal:\n  security_mode: approval-required\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_TERMINAL_SECURITY_MODE", "unrestricted")
+
+        captured: dict = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="ok",
+                projected_messages=[{"role": "assistant", "content": "ok"}],
+                turn_id="turn-stub-1",
+                thread_id="thread-stub-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("review this")
+
+        assert captured["terminal_security_mode"] == "approval-required"
+
     def _capture_routing_agent(self, monkeypatch):
         """Build a codex agent with a CodexAppServerSession stub that captures
         the request_routing passed at construction time, so we can assert how

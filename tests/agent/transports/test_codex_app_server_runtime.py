@@ -209,14 +209,25 @@ class TestSpawnEnvIsolation:
         # And HOME still passes through unchanged
         assert captured["env"].get("HOME") == "/users/alice"
 
-    def test_kanban_worker_adds_only_kanban_writable_root(self, monkeypatch):
-        """Codex-runtime Kanban workers need to write board state outside
-        their scratch/worktree workspace, but should not fall back to
-        danger-full-access. Hermes passes a narrow app-server config override
-        for the Kanban root only.
-        """
+    @pytest.mark.parametrize(
+        "security_mode,expected_sandbox,is_kanban,expect_kanban_root",
+        [
+            ("auto", "workspace-write", False, False),
+            ("auto", "workspace-write", True, True),
+            ("approval-required", "read-only", True, False),
+            ("unrestricted", "danger-full-access", True, False),
+            ("yolo", "danger-full-access", False, False),
+            ("totally-bogus", "read-only", True, False),
+        ],
+    )
+    def test_security_mode_controls_spawn_argv_and_provenance(
+        self, monkeypatch, caplog, security_mode, expected_sandbox,
+        is_kanban, expect_kanban_root,
+    ):
+        """Each Hermes mode pins Codex's sandbox; only auto Kanban workers get the narrow write root."""
         import subprocess
         from agent.transports import codex_app_server as cas
+        from agent.transports import codex_app_server_session as session_mod
 
         captured = {}
 
@@ -243,26 +254,59 @@ class TestSpawnEnvIsolation:
                 pass
 
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(cas.CodexAppServerClient, "initialize", lambda self, **kwargs: {})
+        monkeypatch.setattr(
+            cas.CodexAppServerClient,
+            "request",
+            lambda self, method, params=None, timeout=30.0: (
+                {"thread": {"id": "thread-policy-1"}} if method == "thread/start" else {}
+            ),
+        )
         monkeypatch.setenv("HOME", "/users/alice")
         monkeypatch.setenv("HERMES_HOME", "/users/alice/.hermes/profiles/backend-worker")
-        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        if is_kanban:
+            monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        else:
+            monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
         monkeypatch.setenv(
             "HERMES_KANBAN_DB",
             "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
         )
 
-        client = cas.CodexAppServerClient(codex_bin="codex")
-        client._closed = True
+        with caplog.at_level("INFO", logger=session_mod.__name__):
+            session = session_mod.CodexAppServerSession(
+                codex_bin="codex",
+                terminal_security_mode=security_mode,
+            )
+            session.ensure_started()
+        assert session._client is not None
+        session._client._closed = True
 
         cmd = captured["cmd"]
         assert cmd[:2] == ["codex", "app-server"]
-        assert 'sandbox_mode="workspace-write"' in cmd
-        assert (
-            'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'
-            in cmd
-        )
-        assert "sandbox_workspace_write.network_access=false" in cmd
-        assert all("danger" not in part for part in cmd)
+        assert cmd.count(f'sandbox_mode="{expected_sandbox}"') == 1
+        kanban_root = 'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'
+        assert (kanban_root in cmd) is expect_kanban_root
+        assert ("sandbox_workspace_write.network_access=false" in cmd) is expect_kanban_root
+        assert f"terminal_security_mode={security_mode}" in caplog.text
+        assert f"sandbox_mode={expected_sandbox}" in caplog.text
+        if security_mode == "totally-bogus":
+            assert "unknown terminal.security_mode" in caplog.text
+
+    def test_invalid_direct_sandbox_mode_fails_before_spawn(self, monkeypatch):
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        def unexpected_popen(*args, **kwargs):
+            raise AssertionError("invalid sandbox mode reached subprocess spawn")
+
+        monkeypatch.setattr(subprocess, "Popen", unexpected_popen)
+
+        with pytest.raises(ValueError, match="unsupported Codex sandbox_mode"):
+            cas.CodexAppServerClient(
+                codex_bin="codex",
+                sandbox_mode="full-access",
+            )
 
 
 class TestSpawnEnvSecretStripping:

@@ -45,6 +45,7 @@ class CodexAppServerClient:
     def __init__(
         self, codex_bin: str = "codex", codex_home: Optional[str] = None,
         extra_args: Optional[list[str]] = None, env: Optional[dict[str, str]] = None,
+        sandbox_mode: Optional[str] = None,
     ) -> None:
         self._codex_bin = codex_bin
         # codex needs LLM provider creds but must not receive Tier-1 Hermes secrets (gateway/GitHub/infra tokens).
@@ -63,14 +64,20 @@ class CodexAppServerClient:
             spawn_env["CODEX_HOME"] = codex_home
 
         cmd = [codex_bin, "app-server", *(extra_args or [])]
+        if sandbox_mode is not None:
+            if sandbox_mode not in {"read-only", "workspace-write", "danger-full-access"}:
+                raise ValueError(f"unsupported Codex sandbox_mode: {sandbox_mode!r}")
+            # Append after caller-supplied args so the loaded Hermes profile remains authoritative.
+            cmd += ["-c", f'sandbox_mode="{sandbox_mode}"']
         # Kanban workers must write handoff/status to the board DB outside the
-        # workspace: keep the sandbox on, add the Kanban root as writable.
-        if spawn_env.get("HERMES_KANBAN_TASK"):
+        # workspace. This narrow exception is appropriate only when the loaded
+        # profile already selected workspace-write; never widen read-only or
+        # danger-full-access policies based solely on an ambient worker marker.
+        if spawn_env.get("HERMES_KANBAN_TASK") and sandbox_mode == "workspace-write":
             kanban_db = spawn_env.get("HERMES_KANBAN_DB")
             default_root = os.path.join(spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "kanban")
             kanban_root = os.path.dirname(kanban_db) if kanban_db else spawn_env.get("HERMES_KANBAN_ROOT", default_root)
             cmd += [
-                "-c", 'sandbox_mode="workspace-write"',
                 "-c", f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
                 "-c", "sandbox_workspace_write.network_access=false",
             ]

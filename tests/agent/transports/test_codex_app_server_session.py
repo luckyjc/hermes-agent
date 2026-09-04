@@ -26,9 +26,13 @@ class FakeClient:
     """Stand-in for CodexAppServerClient that records calls and lets the test
     drive the notification / server-request streams synchronously."""
 
-    def __init__(self, *, codex_bin: str = "codex", codex_home=None) -> None:
+    def __init__(
+        self, *, codex_bin: str = "codex", codex_home=None,
+        sandbox_mode: str | None = None,
+    ) -> None:
         self.codex_bin = codex_bin
         self.codex_home = codex_home
+        self.sandbox_mode = sandbox_mode
         self.requests: list[tuple[str, dict]] = []
         self.notifications_responses: list[dict] = []
         self.responses: list[tuple[Any, dict]] = []
@@ -165,10 +169,10 @@ class TestLifecycle:
     def test_thread_start_passes_cwd_only(self):
         """thread/start carries cwd. We intentionally do NOT pass `permissions`
         on this codex version (experimentalApi-gated + requires matching
-        config.toml [permissions] table). Letting codex use its default
-        (read-only unless user configures otherwise) is the documented path."""
+        config.toml [permissions] table). The stable sandbox policy is pinned
+        on the app-server subprocess command line instead."""
         client = FakeClient()
-        s = make_session(client, permission_profile="workspace-write")
+        s = make_session(client, terminal_security_mode="auto")
         s.ensure_started()
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"

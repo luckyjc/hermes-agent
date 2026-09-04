@@ -3,6 +3,8 @@
 import json
 import os
 import time
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -58,6 +60,63 @@ class TestRecordNousRateLimit:
         with open(_state_path()) as f:
             state = json.load(f)
         assert state["reset_seconds"] == pytest.approx(120, abs=2)
+
+
+class TestRecordNousCreditExhaustion:
+    def test_marks_nous_inactive_until_subscription_refresh(self, rate_guard_env):
+        from agent.nous_rate_guard import (
+            nous_unavailable_state,
+            record_nous_credit_exhaustion,
+        )
+
+        reset = datetime.now(timezone.utc) + timedelta(days=3)
+        record_nous_credit_exhaustion(reset_at=reset.isoformat())
+
+        state = nous_unavailable_state()
+        assert state is not None
+        assert state["reason"] == "credits_exhausted"
+        assert state["reset_at"] == pytest.approx(reset.timestamp(), abs=1)
+
+    def test_paid_refresh_records_zero_credit_account_and_does_not_retry(
+        self, rate_guard_env, monkeypatch
+    ):
+        from agent.turn_recovery import _try_refresh_nous_paid_entitlement_credentials
+        from hermes_cli.nous_account import (
+            NousPaidServiceAccessInfo,
+            NousPortalAccountInfo,
+            NousPortalSubscriptionInfo,
+        )
+
+        reset = datetime.now(timezone.utc) + timedelta(days=2)
+        account = NousPortalAccountInfo(
+            logged_in=True,
+            source="account_api",
+            fresh=True,
+            paid_service_access=True,
+            paid_service_access_info=NousPaidServiceAccessInfo(
+                subscription_credits_remaining=0.0,
+                purchased_credits_remaining=0.025,
+                total_usable_credits=0.025,
+            ),
+            subscription=NousPortalSubscriptionInfo(
+                current_period_end=reset.isoformat(),
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.nous_account.get_nous_portal_account_info",
+            lambda force_fresh=False: account,
+        )
+        agent = MagicMock()
+
+        assert _try_refresh_nous_paid_entitlement_credentials(agent) is False
+        agent._try_refresh_nous_client_credentials.assert_not_called()
+
+        from agent.nous_rate_guard import nous_unavailable_state
+
+        state = nous_unavailable_state()
+        assert state is not None
+        assert state["reason"] == "credits_exhausted"
+        assert state["reset_at"] == pytest.approx(reset.timestamp(), abs=1)
 
 
 

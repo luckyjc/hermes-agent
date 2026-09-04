@@ -77,8 +77,24 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
 
-        if get_nous_portal_account_info(force_fresh=True).paid_service_access is not True:
+        account_info = get_nous_portal_account_info(force_fresh=True)
+        if account_info.paid_service_access is not True:
             return False
+        access = account_info.paid_service_access_info
+        if access is not None:
+            subscription_exhausted = (
+                access.subscription_credits_remaining is not None
+                and access.subscription_credits_remaining <= 0
+            )
+            total_exhausted = access.total_usable_credits is not None and access.total_usable_credits <= 0
+            if subscription_exhausted or total_exhausted:
+                subscription = account_info.subscription
+                reset_at = subscription.current_period_end if subscription else None
+                if reset_at:
+                    from agent.nous_rate_guard import record_nous_credit_exhaustion
+
+                    record_nous_credit_exhaustion(reset_at=reset_at)
+                return False
         return agent._try_refresh_nous_client_credentials(force=True)
     except Exception:
         return False

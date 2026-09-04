@@ -431,6 +431,12 @@ def _dashboard_public_hosts() -> frozenset[str]:
     One source of truth for OAuth redirects, Host and WS Origin validation.
     Malformed or unset values fail closed as an empty set.
     """
+    # Desktop-managed profile backends are private loopback children. They must
+    # not inherit a profile's browser-facing dashboard URL, which would replace
+    # the Desktop-minted session-token path with the public auth gate.
+    if os.environ.get("HERMES_DESKTOP") == "1":
+        return frozenset()
+
     from hermes_cli.dashboard_auth.prefix import resolve_public_url
 
     public_url = resolve_public_url()

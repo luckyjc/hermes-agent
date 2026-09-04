@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
 from typing import Any, Mapping, Optional
 from utils import atomic_write_text
 from agent.rate_limit_tracker import (
@@ -69,7 +70,7 @@ def record_nous_rate_limit(
     if reset_at is None:
         reset_at = now + default_cooldown
 
-    state = {"reset_at": reset_at, "recorded_at": now, "reset_seconds": reset_at - now}
+    state = {"reason": "rate_limit", "reset_at": reset_at, "recorded_at": now, "reset_seconds": reset_at - now}
     try:
         atomic_write_text(_state_path(), json.dumps(state))
         logger.info("Nous rate limit recorded: resets in %.0fs (at %.0f)", reset_at - now, reset_at)
@@ -77,20 +78,52 @@ def record_nous_rate_limit(
         logger.debug("Failed to write Nous rate limit state: %s", exc)
 
 
-def nous_rate_limit_remaining() -> Optional[float]:
-    """Seconds remaining until reset, or None if not rate-limited (expired state is removed)."""
+def record_nous_credit_exhaustion(*, reset_at: str) -> bool:
+    """Mark Nous unavailable until the subscription credit window refreshes."""
+    try:
+        text = str(reset_at or "").strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        deadline = datetime.fromisoformat(text).timestamp()
+        now = time.time()
+        if deadline <= now:
+            return False
+        state = {
+            "reason": "credits_exhausted", "reset_at": deadline,
+            "recorded_at": now, "reset_seconds": deadline - now,
+        }
+        atomic_write_text(_state_path(), json.dumps(state))
+        logger.info("Nous credits exhausted: inactive until %.0f", deadline)
+        return True
+    except Exception as exc:
+        logger.debug("Failed to write Nous credit exhaustion state: %s", exc)
+        return False
+
+
+def nous_unavailable_state() -> Optional[dict[str, Any]]:
+    """Return active shared Nous unavailability state, cleaning expired state."""
     path = _state_path()
     try:
         with open(path, encoding="utf-8") as f:
             state = json.load(f)
-        remaining = state.get("reset_at", 0) - time.time()
-        if remaining > 0:
-            return remaining
+        reset_at = float(state.get("reset_at", 0))
+        if reset_at > time.time():
+            return {
+                "reason": str(state.get("reason") or "rate_limit"),
+                "reset_at": reset_at,
+                "remaining": reset_at - time.time(),
+            }
         with contextlib.suppress(OSError):
             os.unlink(path)
         return None
-    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
+
+
+def nous_rate_limit_remaining() -> Optional[float]:
+    """Seconds remaining until reset, or None if Nous is available."""
+    state = nous_unavailable_state()
+    return float(state["remaining"]) if state is not None else None
 
 
 def clear_nous_rate_limit() -> None:

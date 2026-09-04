@@ -220,17 +220,27 @@ def nous_rate_limit_guard(
 
     if agent.provider == "nous":
         try:
-            from agent.nous_rate_guard import (
-                nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining
-            )
-            _nous_remaining = nous_rate_limit_remaining()
-            if _nous_remaining is not None and _nous_remaining > 0:
+            from agent.nous_rate_guard import nous_unavailable_state, format_remaining as _fmt_nous_remaining
+            _nous_state = nous_unavailable_state()
+            if _nous_state is not None and _nous_state["remaining"] > 0:
+                _nous_remaining = _nous_state["remaining"]
+                _nous_condition = (
+                    "credits exhausted"
+                    if _nous_state["reason"] == "credits_exhausted"
+                    else "rate limit active"
+                )
                 _nous_msg = (
-                    f"Nous Portal rate limit active — resets in {_fmt_nous_remaining(_nous_remaining)}."
+                    f"Nous Portal {_nous_condition} — resets in {_fmt_nous_remaining(_nous_remaining)}."
                 )
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
                 agent._buffer_status(f"⏳ {_nous_msg}")
-                if agent._try_activate_fallback():
+                from agent.error_classifier import FailoverReason
+                if agent._try_activate_fallback(
+                    FailoverReason.billing
+                    if _nous_state["reason"] == "credits_exhausted"
+                    else FailoverReason.rate_limit,
+                    announce=False,
+                ):
                     active_system_prompt = _arm_fallback_restart(
                         agent, api_messages, active_system_prompt, _retry)
                     retry_count = 0

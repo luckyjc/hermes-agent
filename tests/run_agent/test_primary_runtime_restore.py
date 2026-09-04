@@ -194,6 +194,37 @@ class TestRestorePrimaryRuntime:
             "fallback anthropic/claude-sonnet-4 via openrouter is no longer active."
         ]
 
+    def test_does_not_restore_nous_while_shared_credit_marker_is_active(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openai-codex", "model": "gpt-5.6-sol"},
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1",
+        )
+        mock_client = _mock_resolve(
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, None),
+        ):
+            assert agent._try_activate_fallback(announce=False) is True
+
+        emitted = []
+        agent._emit_status = emitted.append
+        with patch(
+            "agent.nous_rate_guard.nous_unavailable_state",
+            return_value={
+                "reason": "credits_exhausted",
+                "reset_at": time.time() + 3600,
+                "remaining": 3600,
+            },
+        ):
+            assert agent._restore_primary_runtime() is False
+
+        assert agent.provider == "openai-codex"
+        assert agent._fallback_activated is True
+        assert emitted == []
+
     def test_does_not_label_temporary_model_restore_as_fallback_recovery(self):
         """`/model --once` reuses restore with no provider fallback lifecycle."""
         agent = _make_agent()

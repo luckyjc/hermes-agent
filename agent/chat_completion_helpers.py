@@ -2015,7 +2015,9 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
+def try_activate_fallback(
+    agent, reason: "FailoverReason | None" = None, *, announce: bool = True,
+) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
@@ -2031,7 +2033,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
-        return agent._try_activate_fallback(reason)
+        return agent._try_activate_fallback(reason, announce=announce)
 
     try:
         from agent.auxiliary_client import resolve_provider_client
@@ -2052,7 +2054,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_client is None:
             logger.warning("Fallback to %s failed: provider not configured", fb_provider)
             unavailable.add(fb_key)
-            return agent._try_activate_fallback(reason)
+            return agent._try_activate_fallback(reason, announce=announce)
         try:
             from hermes_cli.model_normalize import normalize_model_for_provider
             fb_model = normalize_model_for_provider(fb_model, fb_provider)
@@ -2091,9 +2093,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-        _buffer_fallback_notice(agent, (
-            f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-            f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}."))
+        if announce:
+            _buffer_fallback_notice(agent, (
+                f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
+                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}."))
         # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
         # provenance so the restore path only emits a recovery notice after a real fallback.
         agent._provider_fallback_active = True
@@ -2110,7 +2113,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_provider == "nous":
             unavailable.add(fb_key)
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
-        return agent._try_activate_fallback(reason)  # try next in chain
+        return agent._try_activate_fallback(reason, announce=announce)  # try next in chain
 
 
 # Keys outside the Chat Completions schema that strict gateways (Fireworks-backed OpenCode

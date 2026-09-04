@@ -131,6 +131,25 @@ class TestFallbackChainAdvancement:
         assert agent._pending_fallback_notice == [expected]
         assert agent._retry_status_buffer[-1] == ("status", expected)
 
+    def test_known_inactive_primary_switches_without_repeated_notice(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        )
+        agent.model = "openai/gpt-5.6-sol"
+        agent.provider = "nous"
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://chatgpt.com/backend-api/codex"), "gpt-5.6-sol"),
+        ):
+            assert agent._try_activate_fallback(
+                FailoverReason.billing,
+                announce=False,
+            ) is True
+
+        assert agent.provider == "openai-codex"
+        assert getattr(agent, "_pending_fallback_notice", None) is None
+        assert getattr(agent, "_retry_status_buffer", []) == []
+
     def test_records_sequential_switches_in_order(self):
         agent = _make_agent(
             fallback_model=[

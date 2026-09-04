@@ -1112,6 +1112,25 @@ def restore_primary_runtime(agent) -> bool:
         # _fallback_index past the chain end and silently block future fallbacks.
         agent._fallback_index = 0
         return False
+    primary_provider = str((agent._primary_runtime or {}).get("provider") or "").strip().lower()
+    if primary_provider in {"nous", "nous-portal", "nousresearch"}:
+        try:
+            from agent.nous_rate_guard import nous_unavailable_state
+
+            unavailable = nous_unavailable_state()
+            if unavailable is not None and unavailable["remaining"] > 0:
+                if not getattr(agent, "_restore_wait_logged", False):
+                    agent._restore_wait_logged = True
+                    logger.info(
+                        "Primary Nous route inactive (%s) until %s; staying on fallback %s/%s",
+                        unavailable["reason"],
+                        datetime.fromtimestamp(unavailable["reset_at"]).isoformat(timespec="seconds"),
+                        agent.provider,
+                        agent.model,
+                    )
+                return False
+        except Exception:
+            logger.debug("Nous shared unavailability restore gate failed open", exc_info=True)
     # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
     # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)
     # leaves _fallback_index >= len(_fallback_chain) while _fallback_activated stays False. The next turn

@@ -27,11 +27,13 @@ logger = logging.getLogger(__name__)
 
 _STDERR_TAIL_LINES = 12  # stderr tail on generic errors: legible, yet enough for a config/auth diagnostic
 
-# Hermes' tools.terminal.security_mode -> Codex permissions profile id.
-# Missing config -> workspace-write (Codex's own default).
-_HERMES_TO_CODEX_PERMISSION_PROFILE = {
-    "auto": "workspace-write", "approval-required": "read-only-with-approval",
-    "unrestricted": "full-access", "yolo": "full-access",  # yolo: backstop alias used by some skills/tests
+# Hermes terminal.security_mode -> Codex's stable sandbox_mode config values.
+# Missing config is explicit ``auto`` and preserves the prior workspace-write behavior.
+_HERMES_TO_CODEX_SANDBOX_MODE = {
+    "auto": "workspace-write",
+    "approval-required": "read-only",
+    "unrestricted": "danger-full-access",
+    "yolo": "danger-full-access",  # backstop alias used by some skills/tests
 }
 
 
@@ -148,7 +150,7 @@ class CodexAppServerSession:
 
     def __init__(
         self, *, cwd: Optional[str] = None, codex_bin: str = "codex",
-        codex_home: Optional[str] = None, permission_profile: Optional[str] = None,
+        codex_home: Optional[str] = None, terminal_security_mode: str = "auto",
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
@@ -157,9 +159,15 @@ class CodexAppServerSession:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
-        self._permission_profile = permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
-            os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"
+        self._terminal_security_mode = str(terminal_security_mode or "auto").strip().lower()
+        self._sandbox_mode = _HERMES_TO_CODEX_SANDBOX_MODE.get(
+            self._terminal_security_mode, "read-only"
         )
+        if self._terminal_security_mode not in _HERMES_TO_CODEX_SANDBOX_MODE:
+            logger.warning(
+                "unknown terminal.security_mode=%r for codex app-server; using read-only",
+                self._terminal_security_mode,
+            )
         self._approval_callback = approval_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
@@ -180,7 +188,11 @@ class CodexAppServerSession:
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
-            self._client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home)
+            self._client = self._client_factory(
+                codex_bin=self._codex_bin,
+                codex_home=self._codex_home,
+                sandbox_mode=self._sandbox_mode,
+            )
         self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
@@ -193,7 +205,11 @@ class CodexAppServerSession:
                 code=-32603, message=f"codex thread/start returned no thread id (payload keys: {sorted(result.keys())})",
             )
         self._thread_id = thread_id
-        logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
+        logger.info(
+            "codex app-server thread started: id=%s terminal_security_mode=%s "
+            "sandbox_mode=%s policy_source=terminal.security_mode cwd=%s",
+            thread_id[:8], self._terminal_security_mode, self._sandbox_mode, self._cwd,
+        )
         return thread_id
 
     def close(self) -> None:

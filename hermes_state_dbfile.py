@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sqlite3
+import stat
 import struct
 import sys
 import threading
@@ -40,6 +41,7 @@ _HEADER_PROBE_LOCK = threading.Lock()
 _HEADER_PROBE_FDS: "dict[str, tuple[int, int, int]]" = {}  # key -> (fd, dev, ino)
 _RETIRED_HEADER_PROBE_FDS: "list[int]" = []  # intentionally never closed
 _FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
+_PRIVATE_STATE_FILE_MODE = 0o600
 
 
 def _pread_db_header(db_path: Path, length: int) -> "Optional[bytes]":
@@ -103,6 +105,120 @@ def _canonical_sqlite_path(path: str) -> str:
 def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
     base = os.path.abspath(os.fspath(db_path))
     return {_canonical_sqlite_path(base + "-wal"), _canonical_sqlite_path(base + "-shm")}
+
+
+def _sqlite_state_file_paths(db_path: Path) -> Tuple[Path, Path, Path]:
+    return (
+        db_path,
+        db_path.with_name(db_path.name + "-wal"),
+        db_path.with_name(db_path.name + "-shm"),
+    )
+
+
+def _lstat_existing_path(path: Path) -> Optional[os.stat_result]:
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+
+def _owner_matches_current_user(st: os.stat_result) -> bool:
+    get_euid = getattr(os, "geteuid", None)
+    return callable(get_euid) and st.st_uid == get_euid()
+
+
+def _chmod_owned_sqlite_state_file(path: Path) -> None:
+    """Owner-only hardening without opening a raw fd.
+
+    Used while a SQLite connection may be live: on POSIX, open()/close() of the
+    database path can cancel this process's advisory locks, but chmod(2) does
+    not carry that lock-cancellation hazard. Missing/raced-away files,
+    symlinks, non-regular files, and foreign-owned files are left unchanged:
+    the privacy contract here is limited to confirmed owner-owned regular state
+    files.
+    """
+    if os.name == "nt":
+        return
+    st = _lstat_existing_path(path)
+    if st is None:
+        return
+    if not stat.S_ISREG(st.st_mode) or not _owner_matches_current_user(st):
+        return
+    current_mode = stat.S_IMODE(st.st_mode)
+    if current_mode == _PRIVATE_STATE_FILE_MODE:
+        return
+    try:
+        os.chmod(path, _PRIVATE_STATE_FILE_MODE, follow_symlinks=False)
+    except (OSError, NotImplementedError) as exc:
+        raise PermissionError(
+            f"{path} is an owner-owned regular SQLite state file with mode "
+            f"0{current_mode:o}; failed to chmod it to 0600. Fix permissions "
+            f"manually with: chmod 600 {path}"
+        ) from exc
+    try:
+        hardened = os.lstat(path)
+    except OSError as exc:
+        raise PermissionError(f"{path} could not be verified as an owner-only 0600 state file") from exc
+    hardened_mode = stat.S_IMODE(hardened.st_mode)
+    same_file = (st.st_dev, st.st_ino) == (hardened.st_dev, hardened.st_ino)
+    if (not same_file or not stat.S_ISREG(hardened.st_mode)
+            or not _owner_matches_current_user(hardened)
+            or hardened_mode != _PRIVATE_STATE_FILE_MODE):
+        detail = f"remains 0{hardened_mode:o}" if same_file else "changed during hardening"
+        raise PermissionError(
+            f"{path} {detail}; expected an unchanged owner-owned regular 0600 state file"
+        )
+
+
+def _create_private_sqlite_main_if_absent(path: Path) -> None:
+    from hermes_cli.sqlite_safe_read import offline_file_access
+
+    with offline_file_access(path, what="precreate"):
+        if _lstat_existing_path(path) is not None:
+            return
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _PRIVATE_STATE_FILE_MODE)
+        try:
+            os.fchmod(fd, _PRIVATE_STATE_FILE_MODE)
+        finally:
+            os.close(fd)
+
+
+def _ensure_existing_or_created_private_sqlite_main(path: Path, *, create: bool) -> None:
+    if create and _lstat_existing_path(path) is None:
+        try:
+            _create_private_sqlite_main_if_absent(path)
+        except FileExistsError:
+            pass
+        except FileNotFoundError:
+            return
+    _chmod_owned_sqlite_state_file(path)
+
+
+def ensure_private_sqlite_state_files(
+    db_path: Path, *, create_main: bool = False, connection_live: bool = False,
+) -> None:
+    """POSIX privacy hardening for ``state.db`` and SQLite sidecars.
+
+    New state.db is precreated with ``0600`` so SQLite-created WAL/SHM sidecars
+    inherit owner-only permissions on runtimes/filesystems that follow the
+    database mode. Existing owner-owned regular files are tightened to ``0600``
+    with ``chmod`` only, including while a connection is live. Missing or
+    race-disappeared sidecars are ignored. Symlinks, non-regular files, and
+    foreign-owned files are not modified; existing open/preflight behavior
+    remains responsible for refusing unusable state paths.
+    """
+    if os.name == "nt" or str(db_path) == ":memory:" or str(db_path).startswith("file:"):
+        return
+    paths = _sqlite_state_file_paths(db_path)
+    if connection_live:
+        for path in paths:
+            _chmod_owned_sqlite_state_file(path)
+        return
+    _ensure_existing_or_created_private_sqlite_main(paths[0], create=create_main)
+    for path in paths[1:]:
+        _chmod_owned_sqlite_state_file(path)
 
 
 def _iter_proc_fd_targets():

@@ -46,6 +46,7 @@ from hermes_state_telegram import SessionTelegramTopicsMixin
 from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 from hermes_state_dbfile import (
+    ensure_private_sqlite_state_files,
     _canonical_sqlite_path, _connect_tracked_db, _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, is_zeroed_state_db, quarantine_cross_process_lock, quarantine_zeroed_state_db,
     refuse_deleted_wal_generation,
@@ -503,9 +504,11 @@ class SessionDB(
                             self.db_path,
                         )
                     self._handle_quarantine_if_zeroed(already_locked=lock_acquired)
+                    ensure_private_sqlite_state_files(self.db_path, create_main=True)
                     self._connect_and_init_with_lock_patience()
             else:
                 self._handle_quarantine_if_zeroed(already_locked=False)
+                ensure_private_sqlite_state_files(self.db_path, create_main=True)
                 self._connect_and_init_with_lock_patience()
         except sqlite3.DatabaseError as exc:
             # A malformed schema fails on the very first statement (before _init_schema), so the
@@ -611,6 +614,7 @@ class SessionDB(
         refuse_deleted_wal_generation(self.db_path)
         self._conn = self._open_writer_conn()
         self._init_schema()
+        ensure_private_sqlite_state_files(self.db_path, connection_live=True)
 
     def _connect_and_init_with_lock_patience(self) -> None:
         """Open + init, waiting out a sibling's write lock with jittered patience:

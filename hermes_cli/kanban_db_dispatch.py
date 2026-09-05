@@ -2025,6 +2025,20 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _load_worker_config(hermes_home: Optional[str]) -> Optional[dict]:
+    """Load one assignee profile's effective config under a context-local home."""
+    if not hermes_home:
+        return None
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli.config import load_config
+
+    token = set_hermes_home_override(hermes_home)
+    try:
+        return load_config()
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
     """Return the assigned profile's effective CLI toolsets for a worker.
 
@@ -2037,17 +2051,12 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
     if not hermes_home:
         return None
     try:
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
 
-        token = set_hermes_home_override(hermes_home)
-        try:
-            cfg = load_config()
-            toolsets = sorted(_get_platform_tools(cfg, "cli"))
-        finally:
-            reset_hermes_home_override(token)
-        return toolsets or None
+        cfg = _load_worker_config(hermes_home)
+        if cfg is None:
+            return None
+        return sorted(_get_platform_tools(cfg, "cli")) or None
     except Exception as exc:
         _kb._log.debug(
             "kanban worker: could not resolve CLI toolsets for HERMES_HOME=%r (%s)",
@@ -2055,6 +2064,30 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
             exc,
         )
         return None
+
+
+def _apply_worker_home_env(env: dict[str, str], hermes_home: str) -> None:
+    """Recompute HOME from the assignee profile, never the dispatcher's config."""
+    try:
+        cfg = _load_worker_config(hermes_home) or {}
+        terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
+        home_mode = str(terminal_cfg.get("home_mode") or "auto") if isinstance(terminal_cfg, dict) else "auto"
+    except Exception as exc:
+        _kb._log.debug(
+            "kanban worker: terminal.home_mode unavailable for HERMES_HOME=%r (%s); using auto",
+            hermes_home,
+            exc,
+        )
+        home_mode = "auto"
+
+    env["TERMINAL_HOME_MODE"] = home_mode
+    from hermes_constants import apply_subprocess_home_env, reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(hermes_home)
+    try:
+        apply_subprocess_home_env(env)
+    finally:
+        reset_hermes_home_override(token)
 
 
 _retagged_workspace_roots: set[str] = set()
@@ -2081,6 +2114,28 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
+
+
+# Exact-name compatibility envelope for a fresh profile process. Provider and
+# gateway credentials are intentionally absent; the child reloads profile .env
+# and root OAuth. Proxy and user-session endpoints are explicit capabilities.
+_KANBAN_WORKER_PARENT_ENV_KEYS = frozenset({
+    "PATH", "PATHEXT", "HOME", "HERMES_REAL_HOME", "USER", "USERNAME", "LOGNAME", "SHELL",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "TMP", "TEMP", "TMPDIR", "TERMUX_VERSION", "PREFIX",
+    "ANDROID_ROOT", "ANDROID_DATA", "WSL_DISTRO_NAME", "WSL_INTEROP", "KUBERNETES_SERVICE_HOST",
+    "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+    "ALLUSERSPROFILE", "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES",
+    "COMMONPROGRAMFILES(X86)", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "OS",
+    "LANG", "LANGUAGE", "LC_ALL", "LC_ADDRESS", "LC_COLLATE", "LC_CTYPE", "LC_IDENTIFICATION",
+    "LC_MEASUREMENT", "LC_MESSAGES", "LC_MONETARY", "LC_NAME", "LC_NUMERIC", "LC_PAPER",
+    "LC_TELEPHONE", "LC_TIME", "TZ", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR",
+    "PYTHONUTF8", "PYTHONIOENCODING", "__CF_USER_TEXT_ENCODING", "HTTP_PROXY", "HTTPS_PROXY",
+    "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE",
+    "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "GIT_SSL_CAINFO",
+    "HERMES_CA_BUNDLE", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY",
+    "SSH_AUTH_SOCK",
+})
 
 
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
@@ -2176,13 +2231,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
 
     profile_arg = normalize_profile_name(task.assignee)
 
-    from agent.secret_scope import is_multiplex_active
     from tools.environments.local import build_subprocess_env
 
-    env = build_subprocess_env(
-        scrub_secrets=is_multiplex_active(),
-        inherit_profile_home=True,
-    )
+    inherited = {key: value for key, value in os.environ.items() if key in _KANBAN_WORKER_PARENT_ENV_KEYS}
+    env = build_subprocess_env(inherited, scrub_secrets=True)
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP
@@ -2194,7 +2246,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # profile root because `hermes -p` applies its override before
     # hermes_constants is imported.
     try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
+        worker_home = resolve_profile_env(profile_arg)
+        env["HERMES_HOME"] = worker_home
+        _apply_worker_home_env(env, worker_home)
     except FileNotFoundError:
         # No profile dir (isolated test fixtures) — the CLI resolves it from
         # HERMES_PROFILE (set below) instead.
@@ -2239,6 +2293,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # match after `hermes -p` rewrites HERMES_HOME (symlink / Docker layouts).
     env["HERMES_KANBAN_DB"] = str(_kb.kanban_db_path(board=board))
     env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(_kb.workspaces_root(board=board))
+    env["HERMES_KANBAN_ATTACHMENTS_ROOT"] = str(_kb.attachments_root(board=board))
     _retag_legacy_worker_sessions(env["HERMES_KANBAN_WORKSPACES_ROOT"])
     # Board slug — defense-in-depth pin if a path is resolved without the
     # DB / workspaces env vars.

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 import subprocess
+import sys
 
 
 def _make_task(kb, *, assignee: str):
@@ -22,6 +26,157 @@ def _make_task(kb, *, assignee: str):
         tenant=None,
         current_run_id=7,
     )
+
+
+def _capture_spawn_env(kb, kbd, monkeypatch, workspace, *, assignee):
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(kwargs.get("env") or {})
+        captured["cwd"] = kwargs.get("cwd")
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    pid = kbd._default_spawn(_make_task(kb, assignee=assignee), str(workspace))
+    return pid, captured
+
+
+def _write_profile(root, name, home_mode):
+    profile = root / "profiles" / name
+    (profile / "home").mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text(
+        f"terminal:\n  home_mode: {home_mode}\ntoolsets:\n  - kanban\n",
+        encoding="utf-8",
+    )
+    return profile
+
+
+def test_default_spawn_allow_only_environment_contract(monkeypatch, tmp_path):
+    root = tmp_path / ".hermes"
+    (root / "home").mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    dispatcher = _write_profile(root, "dispatcher", "profile")
+    expected_homes = {
+        "worker-profile": _write_profile(root, "worker-profile", "profile") / "home",
+        "worker-real": real_home,
+        "worker-auto": _write_profile(root, "worker-auto", "auto") / "home",
+    }
+    _write_profile(root, "worker-real", "real")
+    attachments_root = tmp_path / "custom-attachments"
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
+    monkeypatch.setenv("HOME", str(real_home))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+    monkeypatch.setenv("UNREGISTERED_GATEWAY_SENTINEL", "must-not-cross")
+    monkeypatch.setenv("OPENAI_API_KEY", "parent-provider-secret")
+    monkeypatch.setenv("PATH", "/safe/bin")
+    monkeypatch.setenv("TERMUX_VERSION", "test")
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+    monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT", str(attachments_root))
+
+    import hermes_constants
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+    token = set_hermes_home_override(str(dispatcher))
+    try:
+        for assignee, expected_home in expected_homes.items():
+            _, captured = _capture_spawn_env(
+                kb, kbd, monkeypatch, workspace, assignee=assignee
+            )
+            env = captured["env"]
+            assert "UNREGISTERED_GATEWAY_SENTINEL" not in env
+            assert "OPENAI_API_KEY" not in env
+            assert env["PATH"].split(os.pathsep)[-1] == "/safe/bin"
+            assert env["TERMUX_VERSION"] == "test"
+            assert env["PREFIX"] == "/data/data/com.termux/files/usr"
+            assert env["KUBERNETES_SERVICE_HOST"] == "10.43.0.1"
+            assert env["HERMES_HOME"] == str(root / "profiles" / assignee)
+            assert env["HOME"] == str(expected_home)
+            assert env["HERMES_KANBAN_TASK"] == "t_spawn_tools"
+            assert env["HERMES_KANBAN_ATTACHMENTS_ROOT"] == str(attachments_root)
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_default_spawn_real_child_reloads_profile_provider(monkeypatch, tmp_path):
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    profile = _write_profile(root, "elias", "real")
+    profile.joinpath(".env").write_text(
+        "OPENAI_API_KEY=profile-provider-secret\n", encoding="utf-8"
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    result_path = tmp_path / "worker-env-result.json"
+    repo_root = Path(__file__).resolve().parents[2]
+    probe = tmp_path / "worker_env_probe.py"
+    probe.write_text(
+        "\n".join([
+            "import json, os, sys",
+            "from pathlib import Path",
+            f"sys.path.insert(0, {str(repo_root)!r})",
+            "parent_unknown = 'UNREGISTERED_GATEWAY_SENTINEL' in os.environ",
+            "parent_provider = 'OPENAI_API_KEY' in os.environ",
+            "from hermes_cli.env_loader import load_hermes_dotenv",
+            "load_hermes_dotenv(load_external_secrets=False)",
+            f"Path({str(result_path)!r}).write_text(json.dumps({{",
+            "    'unknown_parent': parent_unknown,",
+            "    'provider_parent': parent_provider,",
+            "    'profile_provider': os.environ.get('OPENAI_API_KEY') == 'profile-provider-secret',",
+            "    'task': os.environ.get('HERMES_KANBAN_TASK'),",
+            "    'home': os.environ.get('HERMES_HOME'),",
+            "}), encoding='utf-8')",
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("UNREGISTERED_GATEWAY_SENTINEL", "must-not-cross")
+    monkeypatch.setenv("OPENAI_API_KEY", "parent-provider-secret")
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(
+        kbd, "_resolve_hermes_argv", lambda: [sys.executable, str(probe)]
+    )
+    real_popen = subprocess.Popen
+    spawned = {}
+
+    def tracking_popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        spawned["proc"] = proc
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", tracking_popen)
+    pid = kbd._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+
+    assert pid is not None
+    returncode = spawned["proc"].wait(timeout=10)
+    log_path = kb.worker_logs_dir() / "t_spawn_tools.log"
+    assert returncode == 0, log_path.read_text(encoding="utf-8", errors="replace")
+    assert result_path.exists(), "spawned environment probe did not complete"
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "unknown_parent": False,
+        "provider_parent": False,
+        "profile_provider": True,
+        "task": "t_spawn_tools",
+        "home": str(profile),
+    }
 
 
 def test_default_spawn_pins_assignee_profile_cli_toolsets(monkeypatch, tmp_path):
